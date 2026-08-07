@@ -84,6 +84,7 @@ async fn custom_system_prompts() -> Result<()> {
         type_: "preset".to_string(),
         preset: "custom_prompt".to_string(),
         append: None,
+        exclude_dynamic_sections: None,
     });
 
     // Use system prompt in options

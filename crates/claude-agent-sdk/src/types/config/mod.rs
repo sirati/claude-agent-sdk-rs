@@ -133,6 +133,11 @@ pub struct ClaudeAgentOptions {
     /// Custom agent definitions
     #[builder(default, setter(strip_option))]
     pub agents: Option<HashMap<String, AgentDefinition>>,
+    /// Which discovered skills to enable: a specific list of names, or
+    /// [`SkillsSelector::All`] to enable every discovered skill (which also
+    /// implicitly allows the `Skill` tool). `None` (default) enables none.
+    #[builder(default, setter(strip_option))]
+    pub skills: Option<SkillsSelector>,
     /// Setting sources to use.
     ///
     /// When `None`, the SDK does **not** load any filesystem settings,
@@ -237,6 +242,34 @@ pub struct ClaudeAgentOptions {
     /// can pace tool use and wrap up before the limit.
     #[builder(default, setter(strip_option))]
     pub task_budget: Option<TaskBudget>,
+    /// Mirror session transcripts to an external store.
+    ///
+    /// When set, every transcript line written locally is also passed to
+    /// `session_store.append()`, and `resume` can materialize from the
+    /// store when the local file is absent. See
+    /// [`crate::session::SessionStore`] and
+    /// [`crate::session::validate_session_store_options`] for the
+    /// combinations this is validated against.
+    #[builder(default, setter(strip_option))]
+    pub session_store: Option<Arc<dyn crate::session::SessionStore>>,
+    /// When to flush mirrored transcript entries to `session_store`.
+    ///
+    /// `Batched` (default) coalesces entries and flushes once per turn or
+    /// when the buffer exceeds 500 entries / 1 MiB. `Eager` triggers a
+    /// background flush after every frame for near-real-time delivery (each
+    /// flush still runs off the read loop, so a slow adapter does not stall
+    /// message streaming). Ignored when `session_store` is `None`.
+    #[builder(default)]
+    pub session_store_flush: crate::session::SessionStoreFlushMode,
+    /// Timeout for each `session_store.load()` / `list_subkeys()` call
+    /// during resume materialization, in milliseconds.
+    ///
+    /// If the adapter doesn't settle within this window the query fails
+    /// with a clear error instead of hanging the iterator forever. A value
+    /// of 0 means immediate timeout; use a large value to effectively
+    /// disable.
+    #[builder(default = 60_000)]
+    pub load_timeout_ms: u64,
 }
 
 impl Default for ClaudeAgentOptions {
@@ -280,6 +313,12 @@ pub struct SystemPromptPreset {
     /// Text to append to the preset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub append: Option<String>,
+    /// Strip per-user dynamic sections (working directory, auto-memory, git
+    /// status) from the system prompt so it stays static and cacheable
+    /// across users. The stripped content is re-injected into the first
+    /// user message so the model still has access to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_dynamic_sections: Option<bool>,
 }
 
 impl SystemPromptPreset {
@@ -289,6 +328,7 @@ impl SystemPromptPreset {
             type_: "preset".to_string(),
             preset: preset.into(),
             append: None,
+            exclude_dynamic_sections: None,
         }
     }
 
@@ -298,6 +338,7 @@ impl SystemPromptPreset {
             type_: "preset".to_string(),
             preset: preset.into(),
             append: Some(append.into()),
+            exclude_dynamic_sections: None,
         }
     }
 }
@@ -377,6 +418,51 @@ pub struct AgentDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(default, setter(strip_option))]
     pub model: Option<AgentModel>,
+}
+
+/// Selects which discovered skills [`ClaudeAgentOptions::skills`] enables.
+///
+/// Mirrors Python's `list[str] | Literal["all"] | None`: a specific list of
+/// skill names, or the literal string `"all"` to enable every discovered
+/// skill. `skills == "all"` also implicitly appends a bare `"Skill"` entry
+/// to the effective `allowed_tools` at the wire level (see
+/// `can_use_tool_shadowed_warning`'s Python counterpart
+/// `_warn_if_can_use_tool_shadowed`) — `skills = [names]` does not, since it
+/// appends `Skill(name)` specifiers instead, which don't shadow the
+/// callback the way a bare `Skill` entry does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillsSelector {
+    /// Enable only these specific skills.
+    List(Vec<String>),
+    /// Enable every discovered skill.
+    All,
+}
+
+impl serde::Serialize for SkillsSelector {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            SkillsSelector::List(names) => names.serialize(serializer),
+            SkillsSelector::All => serializer.serialize_str("all"),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SkillsSelector {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            All(String),
+            List(Vec<String>),
+        }
+        match Repr::deserialize(deserializer)? {
+            Repr::All(s) if s == "all" => Ok(SkillsSelector::All),
+            Repr::All(other) => Err(serde::de::Error::custom(format!(
+                "expected \"all\" or a list of skill names, got string {other:?}"
+            ))),
+            Repr::List(names) => Ok(SkillsSelector::List(names)),
+        }
+    }
 }
 
 /// Model selection for agents

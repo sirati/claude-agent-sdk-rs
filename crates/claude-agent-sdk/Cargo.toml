@@ -36,6 +36,11 @@ semver = { workspace = true }
 paste = { workspace = true }
 typed-builder = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+unicode-normalization = "0.1"
+unicode-general-category = "1.0"
+# `session::resume` uses this at runtime (not just in tests) to create the
+# temp `CLAUDE_CONFIG_DIR` layout, so it can't stay dev-only.
+tempfile = { workspace = true }
 
 # Optional dependencies (defined locally, not from workspace)
 notify = { version = "7.0", optional = true }
@@ -50,4 +55,3 @@ hot-reload = ["notify", "notify-debouncer-mini"]
 
 [dev-dependencies]
 tokio-test = { workspace = true }
-tempfile = { workspace = true }

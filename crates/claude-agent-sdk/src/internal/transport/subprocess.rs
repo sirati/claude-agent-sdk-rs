@@ -26,6 +26,9 @@ use super::Transport;
 
 use crate::internal::cli_installer::{CliInstaller, InstallProgress};
 
+mod subprocess_windows_safety;
+use subprocess_windows_safety::{reject_windows_batch_cli, reject_windows_cmd_metacharacters};
+
 /// Thread-safe buffer usage metrics using atomic operations.
 ///
 /// This struct tracks buffer statistics without requiring locks, using
@@ -230,6 +233,11 @@ impl SubprocessTransport {
             // 尝试查找 CLI，如果失败且启用自动安装，则尝试安装
             Self::find_cli_with_auto_install(&options)?
         };
+
+        // Validate the resolved CLI before anything is spawned with it --
+        // this guards the version probe in connect() as well as the main
+        // spawn.
+        reject_windows_batch_cli(&cli_path)?;
 
         let cwd = options.cwd.clone().or_else(|| std::env::current_dir().ok());
 
@@ -495,7 +503,7 @@ impl SubprocessTransport {
     }
 
     /// Build command arguments from options
-    fn build_command(&self) -> Vec<String> {
+    fn build_command(&self) -> Result<Vec<String>> {
         let mut args = vec![
             "--output-format".to_string(),
             "stream-json".to_string(),
@@ -702,11 +710,13 @@ impl SubprocessTransport {
         // could be parsed as a separate flag instead. The equals form always
         // binds the value to the flag.
         if let Some(ref resume) = self.options.resume {
+            reject_windows_cmd_metacharacters("resume", resume)?;
             args.push(format!("--resume={resume}"));
         }
 
         // Add explicit session ID (same equals-form rationale as --resume)
         if let Some(ref session_id) = self.options.session_id {
+            reject_windows_cmd_metacharacters("session_id", session_id)?;
             args.push(format!("--session-id={session_id}"));
         }
 
@@ -728,6 +738,15 @@ impl SubprocessTransport {
             args.push(dir.display().to_string());
         }
 
+        // Tell the CLI about external (stdio/sse/http) MCP servers it needs
+        // to spawn/connect to itself. SDK (in-process) servers are handled
+        // entirely through the control protocol (see set_sdk_mcp_servers)
+        // and are deliberately excluded here.
+        if let Some(mcp_config) = self.build_mcp_config_value() {
+            args.push("--mcp-config".to_string());
+            args.push(mcp_config);
+        }
+
         // Add include partial messages
         if self.options.include_partial_messages {
             args.push("--include-partial-messages".to_string());
@@ -743,14 +762,17 @@ impl SubprocessTransport {
             args.push("--fork-session".to_string());
         }
 
-        // Add agent definitions
-        if let Some(ref agents) = self.options.agents
-            && !agents.is_empty()
-        {
-            let agents_json = serde_json::to_string(agents).unwrap_or_default();
-            args.push("--agents".to_string());
-            args.push(agents_json);
+        // Mirror session transcripts to an external store, if configured.
+        // The store itself is consumed out-of-band by the SDK parent (not
+        // passed on argv) — this flag just tells the CLI to emit the
+        // `transcript_mirror` frames the SDK forwards to `session_store`.
+        if self.options.session_store.is_some() {
+            args.push("--session-mirror".to_string());
         }
+
+        // Agent definitions are sent via the control-protocol `initialize`
+        // request (see `QueryFull::initialize`), matching the TypeScript SDK
+        // and upstream Python — no `--agents` CLI flag needed.
 
         // Add setting sources
         if let Some(ref sources) = self.options.setting_sources {
@@ -774,15 +796,76 @@ impl SubprocessTransport {
             }
         }
 
-        // Add extra args
+        // Add extra args for future CLI flags. Passed as --flag=value rather
+        // than two argv tokens when the value starts with '-': the CLI
+        // declares some of these flags with an optional value, so in the
+        // two-token form a dash-leading value would not bind to the flag
+        // and could be parsed as a separate flag instead (the same
+        // injection the --resume/--session-id equals-form above closes).
         for (key, value) in &self.options.extra_args {
-            args.push(format!("--{}", key));
-            if let Some(v) = value {
-                args.push(v.clone());
+            match value {
+                None => args.push(format!("--{key}")),
+                Some(v) if v.starts_with('-') => args.push(format!("--{key}={v}")),
+                Some(v) => {
+                    args.push(format!("--{key}"));
+                    args.push(v.clone());
+                },
             }
         }
 
-        args
+        Ok(args)
+    }
+
+    /// Build the `--mcp-config` argv value from `options.mcp_servers`.
+    ///
+    /// SDK (in-process) servers are stripped out: the CLI never spawns or
+    /// connects to them itself, so mirroring Python's `servers_for_cli`
+    /// filtering, only stdio/sse/http configs are serialized. A raw
+    /// string/path value is passed straight through, matching Python's
+    /// non-dict branch. Returns `None` when there is nothing left to send.
+    fn build_mcp_config_value(&self) -> Option<String> {
+        use crate::types::mcp::{McpServerConfig, McpServers};
+
+        match &self.options.mcp_servers {
+            McpServers::Empty => None,
+            McpServers::Path(path) => Some(path.display().to_string()),
+            McpServers::Dict(servers) => {
+                let servers_for_cli: serde_json::Map<String, serde_json::Value> = servers
+                    .iter()
+                    .filter_map(|(name, config)| {
+                        let value = match config {
+                            McpServerConfig::Stdio(cfg) => {
+                                let mut v = serde_json::to_value(cfg).ok()?;
+                                v["type"] = serde_json::json!("stdio");
+                                v
+                            },
+                            McpServerConfig::Sse(cfg) => {
+                                let mut v = serde_json::to_value(cfg).ok()?;
+                                v["type"] = serde_json::json!("sse");
+                                v
+                            },
+                            McpServerConfig::Http(cfg) => {
+                                let mut v = serde_json::to_value(cfg).ok()?;
+                                v["type"] = serde_json::json!("http");
+                                v
+                            },
+                            // SDK servers are in-process and are handled via
+                            // set_sdk_mcp_servers()/the control protocol, not
+                            // the CLI subprocess.
+                            McpServerConfig::Sdk(_) => return None,
+                        };
+                        Some((name.clone(), value))
+                    })
+                    .collect();
+
+                if servers_for_cli.is_empty() {
+                    None
+                } else {
+                    let payload = serde_json::json!({ "mcpServers": servers_for_cli });
+                    Some(payload.to_string())
+                }
+            },
+        }
     }
 
     /// Build settings value, merging sandbox settings if provided.
@@ -906,7 +989,7 @@ impl Transport for SubprocessTransport {
         self.check_claude_version().await?;
 
         // Build command
-        let args = self.build_command();
+        let args = self.build_command()?;
         let env = self.build_env();
 
         // Build command
@@ -1241,6 +1324,8 @@ impl Drop for SubprocessTransport {
 mod tests {
     use super::*;
     use crate::types::config::{ClaudeAgentOptions, EffortLevel, TaskBudget, ThinkingConfig};
+    use crate::types::mcp::{McpServerConfig, McpServers, McpSdkServerConfig, McpStdioServerConfig};
+    use std::collections::HashMap;
 
     /// Avoids CLI lookup during construction: `cli_path` is set explicitly, so
     /// `SubprocessTransport::new()` never has to probe PATH.
@@ -1256,7 +1341,7 @@ mod tests {
             .session_id("11111111-1111-1111-1111-111111111111")
             .include_hook_events(true)
             .build();
-        let args = transport_with(options).build_command();
+        let args = transport_with(options).build_command().expect("build_command");
 
         assert!(args.contains(&"--strict-mcp-config".to_string()));
         assert!(args.contains(&"--session-id=11111111-1111-1111-1111-111111111111".to_string()));
@@ -1270,7 +1355,7 @@ mod tests {
             .effort(EffortLevel::XHigh)
             .task_budget(TaskBudget { total: 5000 })
             .build();
-        let args = transport_with(options).build_command();
+        let args = transport_with(options).build_command().expect("build_command");
 
         assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
         assert!(args.windows(2).any(|w| w == ["--task-budget", "5000"]));
@@ -1286,7 +1371,7 @@ mod tests {
                 display: None,
             })
             .build();
-        let args = transport_with(options).build_command();
+        let args = transport_with(options).build_command().expect("build_command");
 
         assert!(args.windows(2).any(|w| w == ["--max-thinking-tokens", "4096"]));
         assert!(!args.contains(&"1000".to_string()));
@@ -1298,9 +1383,114 @@ mod tests {
             .cli_path(PathBuf::from("claude"))
             .resume("some-session")
             .build();
-        let args = transport_with(options).build_command();
+        let args = transport_with(options).build_command().expect("build_command");
 
         assert!(args.contains(&"--resume=some-session".to_string()));
         assert!(!args.contains(&"--resume".to_string()));
+    }
+
+    #[test]
+    fn build_command_session_mirror_flag_follows_session_store() {
+        let without_store = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .build();
+        let args = transport_with(without_store).build_command().expect("build_command");
+        assert!(!args.contains(&"--session-mirror".to_string()));
+
+        let with_store = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .session_store(std::sync::Arc::new(crate::session::InMemorySessionStore::new())
+                as std::sync::Arc<dyn crate::session::SessionStore>)
+            .build();
+        let args = transport_with(with_store).build_command().expect("build_command");
+        assert!(args.contains(&"--session-mirror".to_string()));
+    }
+
+    /// SDK (in-process) servers must never reach the CLI's argv -- they are
+    /// handled entirely through the control protocol. Only the external
+    /// (stdio/sse/http) servers belong in `--mcp-config`.
+    #[test]
+    fn build_command_mcp_config_includes_stdio_and_excludes_sdk_servers() {
+        let mut servers = HashMap::new();
+        servers.insert(
+            "stdio-server".to_string(),
+            McpServerConfig::Stdio(McpStdioServerConfig {
+                command: "some-command".to_string(),
+                args: Some(vec!["--flag".to_string()]),
+                env: None,
+            }),
+        );
+        servers.insert(
+            "sdk-server".to_string(),
+            McpServerConfig::Sdk(McpSdkServerConfig {
+                name: "sdk-server".to_string(),
+                instance: std::sync::Arc::new(NoopSdkMcpServer),
+            }),
+        );
+
+        let options = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .mcp_servers(McpServers::Dict(servers))
+            .build();
+        let args = transport_with(options).build_command().expect("build_command");
+
+        let idx = args
+            .iter()
+            .position(|a| a == "--mcp-config")
+            .expect("--mcp-config present");
+        let value = &args[idx + 1];
+        let parsed: serde_json::Value = serde_json::from_str(value).expect("valid json");
+        let mcp_servers = parsed["mcpServers"].as_object().expect("mcpServers object");
+
+        assert_eq!(mcp_servers.len(), 1);
+        assert_eq!(mcp_servers["stdio-server"]["type"], "stdio");
+        assert_eq!(mcp_servers["stdio-server"]["command"], "some-command");
+        assert!(!mcp_servers.contains_key("sdk-server"));
+    }
+
+    /// No-op stub used only to construct an `McpServerConfig::Sdk` for the
+    /// filtering test above.
+    struct NoopSdkMcpServer;
+
+    #[async_trait]
+    impl crate::types::mcp::SdkMcpServer for NoopSdkMcpServer {
+        async fn handle_message(&self, _message: serde_json::Value) -> Result<serde_json::Value> {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
+    /// A dash-leading extra-arg value must bind to its flag via the equals
+    /// form; the two-token form would let the CLI's arg parser see it as an
+    /// independent flag instead of the value.
+    #[test]
+    fn build_command_extra_args_dash_value_uses_equals_form() {
+        let mut extra_args = HashMap::new();
+        extra_args.insert("future-flag".to_string(), Some("-injected".to_string()));
+        extra_args.insert("bool-flag".to_string(), None);
+
+        let options = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .extra_args(extra_args)
+            .build();
+        let args = transport_with(options).build_command().expect("build_command");
+
+        assert!(args.contains(&"--future-flag=-injected".to_string()));
+        assert!(!args.contains(&"--future-flag".to_string()));
+        assert!(args.contains(&"--bool-flag".to_string()));
+    }
+
+    #[test]
+    fn build_command_extra_args_plain_value_uses_two_tokens() {
+        let mut extra_args = HashMap::new();
+        extra_args.insert("future-flag".to_string(), Some("plain".to_string()));
+
+        let options = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .extra_args(extra_args)
+            .build();
+        let args = transport_with(options).build_command().expect("build_command");
+
+        let idx = args.iter().position(|a| a == "--future-flag").expect("flag present");
+        assert_eq!(args[idx + 1], "plain");
     }
 }

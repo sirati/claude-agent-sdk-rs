@@ -240,6 +240,7 @@ pub mod mcp;
 pub mod observability;
 pub mod orchestration;
 pub mod query;
+pub mod session;
 pub mod skills;
 pub mod commands;
 pub mod subagents;
@@ -267,6 +268,17 @@ pub use orchestration::{
     Agent, AgentFilter, AgentInput, AgentMetadata, AgentOutput, AgentRegistry,
     ExecutionConfig, ExecutionContext, ExecutionTrace, Orchestrator, OrchestratorInput,
     OrchestratorOutput, ParallelOrchestrator, SequentialOrchestrator,
+};
+pub use session::{
+    delete_session, delete_session_via_store, fold_session_summary, fork_session,
+    fork_session_via_store, get_session_info, get_session_info_from_store, get_session_messages,
+    get_session_messages_from_store, get_subagent_messages, get_subagent_messages_from_store,
+    import_session_to_store, list_sessions, list_sessions_from_store, list_subagents,
+    list_subagents_from_store, project_key_for_directory, rename_session,
+    rename_session_via_store, tag_session, tag_session_via_store, validate_session_store_options,
+    ForkSessionResult, InMemorySessionStore, SDKSessionInfo, SessionKey, SessionListSubkeysKey,
+    SessionMessage, SessionMessageType, SessionStore, SessionStoreEntry, SessionStoreError,
+    SessionStoreFlushMode, SessionStoreListEntry, SessionSummaryEntry,
 };
 pub use skills::{
     Skill, SkillError, SkillInput, SkillOutput, SkillPackage, SkillRegistry, SkillResources,
@@ -304,6 +316,11 @@ pub use internal::pool::{PoolConfig, PoolStats};
 
 // Re-export parsing mode for performance tuning
 pub use internal::message_parser::ParsingMode;
+
+// Re-export the terminal task-status set (matches upstream's public
+// `TERMINAL_TASK_STATUSES` export) so consumers can check a task's status
+// against the same set the SDK itself uses for in-flight tracking.
+pub use internal::run_lifecycle::TERMINAL_TASK_STATUSES;
 
 // Re-export V2 API
 pub use v2::{

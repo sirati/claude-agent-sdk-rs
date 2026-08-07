@@ -8,9 +8,10 @@ use tokio::sync::Mutex;
 
 use crate::errors::{ClaudeError, Result};
 use crate::internal::message_parser::MessageParser;
-use crate::internal::query_full::QueryFull;
+use crate::internal::query_full::{QueryFull, build_mirror_error_message};
 use crate::internal::transport::subprocess::QueryPrompt;
 use crate::internal::transport::{SubprocessTransport, Transport};
+use crate::session::{MirrorErrorCallback, build_mirror_batcher};
 use crate::types::config::{ClaudeAgentOptions, PermissionMode};
 use crate::types::hooks::HookEvent;
 use crate::types::messages::{Message, UserContentBlock};
@@ -139,9 +140,21 @@ impl ClaudeClient {
         // Advisory only, mirrors Python's `_warn_if_can_use_tool_shadowed`: only
         // relevant when a `can_use_tool` callback is actually configured.
         if self.options.can_use_tool.is_some() {
+            // `skills = "all"` makes the transport implicitly append a bare
+            // "Skill" to the effective allowed_tools, so it shadows the
+            // callback just like a hand-written entry; `skills = [names]`
+            // appends `Skill(name)` specifiers instead, which do not.
+            let mut effective_allowed_tools = self.options.allowed_tools.clone();
+            if matches!(
+                self.options.skills,
+                Some(crate::types::config::SkillsSelector::All)
+            ) && !effective_allowed_tools.iter().any(|t| t == "Skill")
+            {
+                effective_allowed_tools.push("Skill".to_string());
+            }
             if let Some(msg) = crate::types::permissions::can_use_tool_shadowed_warning(
                 self.options.permission_mode,
-                &self.options.allowed_tools,
+                &effective_allowed_tools,
             ) {
                 tracing::warn!("{msg}");
             }
@@ -158,6 +171,45 @@ impl ClaudeClient {
 
         self.connected = true;
         Ok(())
+    }
+
+    /// Attach a `TranscriptMirrorBatcher` to `query` when `options.session_store`
+    /// is configured, mirroring upstream `client.py`'s
+    /// `query.set_transcript_mirror_batcher(build_mirror_batcher(...))` call
+    /// site. Must run before `query.start()` so no `transcript_mirror`
+    /// frame from the very first turn is peeled off before a batcher is
+    /// attached to receive it.
+    async fn attach_transcript_mirror_batcher(&self, query: &QueryFull) {
+        let Some(store) = self.options.session_store.clone() else { return };
+
+        // `materialized: None` — this client doesn't yet materialize
+        // resume-from-store sessions to a temp `CLAUDE_CONFIG_DIR` (that's
+        // a separate, concurrently-landing slice); once it does, the
+        // resolved `MaterializedResume` belongs here so the batcher's
+        // `projects_dir` matches wherever the session was materialized to.
+        let materialized = None;
+        let flush_mode = self.options.session_store_flush;
+
+        // Captures a plain sender clone rather than a handle back to the
+        // (not-yet-`Arc`-wrapped) `QueryFull` itself, so this closure can't
+        // create a reference cycle through the batcher it's about to be
+        // installed into.
+        let message_tx = query.message_sender();
+        let on_error: MirrorErrorCallback = Arc::new(move |key, error| {
+            let message_tx = message_tx.clone();
+            Box::pin(async move {
+                let _ = message_tx.send(build_mirror_error_message(key, error));
+            })
+        });
+
+        let batcher = Arc::new(build_mirror_batcher(
+            store,
+            materialized,
+            &self.options.env,
+            on_error,
+            flush_mode,
+        ));
+        query.set_transcript_mirror_batcher(batcher).await;
     }
 
     /// Connect using the connection pool
@@ -231,11 +283,28 @@ impl ClaudeClient {
                 .collect()
         });
 
+        self.attach_transcript_mirror_batcher(&query).await;
+
         // Start reading messages in background FIRST
         query.start().await?;
 
-        // Initialize with hooks (sends control request)
-        query.initialize(hooks).await?;
+        // Initialize with hooks, agents, skills, and exclude_dynamic_sections
+        // (sends control request). Agents/skills go here, not CLI argv,
+        // matching the TypeScript SDK and upstream Python.
+        let exclude_dynamic_sections = match &self.options.system_prompt {
+            Some(crate::types::config::SystemPrompt::Preset(preset)) => {
+                preset.exclude_dynamic_sections
+            }
+            _ => None,
+        };
+        query
+            .initialize(
+                hooks,
+                self.options.agents.as_ref(),
+                self.options.skills.as_ref(),
+                exclude_dynamic_sections,
+            )
+            .await?;
 
         self.query = Some(Arc::new(Mutex::new(query)));
         Ok(())
@@ -300,13 +369,30 @@ impl ClaudeClient {
                 .collect()
         });
 
+        self.attach_transcript_mirror_batcher(&query).await;
+
         // Start reading messages in background FIRST
         // This must happen before initialize() because initialize()
         // sends a control request and waits for response
         query.start().await?;
 
-        // Initialize with hooks (sends control request)
-        query.initialize(hooks).await?;
+        // Initialize with hooks, agents, skills, and exclude_dynamic_sections
+        // (sends control request). Agents/skills go here, not CLI argv,
+        // matching the TypeScript SDK and upstream Python.
+        let exclude_dynamic_sections = match &self.options.system_prompt {
+            Some(crate::types::config::SystemPrompt::Preset(preset)) => {
+                preset.exclude_dynamic_sections
+            }
+            _ => None,
+        };
+        query
+            .initialize(
+                hooks,
+                self.options.agents.as_ref(),
+                self.options.skills.as_ref(),
+                exclude_dynamic_sections,
+            )
+            .await?;
 
         self.query = Some(Arc::new(Mutex::new(query)));
         Ok(())
@@ -1040,23 +1126,12 @@ impl ClaudeClient {
         }
 
         if let Some(query) = self.query.take() {
-            // Close stdin first (using direct access) to signal CLI to exit
-            // This will cause the background task to finish and release transport lock
+            // `QueryFull::close()` final-flushes any pending mirrored
+            // transcript entries, closes stdin so the background read task
+            // observes EOF and releases the transport lock it holds for the
+            // whole read loop, then closes the transport.
             let query_guard = query.lock().await;
-            if let Some(ref stdin_arc) = query_guard.stdin {
-                let mut stdin_guard = stdin_arc.lock().await;
-                if let Some(mut stdin_stream) = stdin_guard.take() {
-                    let _ = stdin_stream.shutdown().await;
-                }
-            }
-            let transport = Arc::clone(&query_guard.transport);
-            drop(query_guard);
-
-            // Give background task a moment to finish reading and release lock
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-            let mut transport_guard = transport.lock().await;
-            transport_guard.close().await?;
+            query_guard.close().await?;
         }
 
         self.connected = false;

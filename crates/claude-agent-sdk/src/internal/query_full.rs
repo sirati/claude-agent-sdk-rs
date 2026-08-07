@@ -2,17 +2,42 @@
 
 use futures::stream::StreamExt;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::errors::{ClaudeError, Result};
+use crate::session::{SessionKey, TranscriptMirrorBatcher};
 use crate::types::hooks::{HookCallback, HookContext, HookInput, HookMatcher};
 use crate::types::mcp::McpSdkServerConfig;
 
+use super::run_lifecycle::{RunEndedSignal, track_task_lifecycle};
 use super::transport::Transport;
+
+/// Build the wire JSON for a `mirror_error` system message (see
+/// [`crate::types::messages::MirrorErrorMessage`]).
+///
+/// Shared between [`QueryFull::report_mirror_error`] and the
+/// `on_error` callback client.rs wires up when attaching a
+/// `TranscriptMirrorBatcher` (that callback runs before the `QueryFull` it
+/// reports into is wrapped in its owning `Arc`, so it captures a plain
+/// message-sender clone and calls this free function directly rather than
+/// going through `report_mirror_error`).
+pub(crate) fn build_mirror_error_message(key: Option<SessionKey>, error: String) -> serde_json::Value {
+    let session_id = key.as_ref().map(|k| k.session_id.clone()).unwrap_or_default();
+    let key_json = key.and_then(|k| serde_json::to_value(k).ok());
+    json!({
+        "type": "system",
+        "subtype": "mirror_error",
+        "error": error,
+        "key": key_json,
+        "uuid": uuid::Uuid::new_v4().to_string(),
+        "session_id": session_id,
+    })
+}
 
 /// Control request from SDK to CLI
 #[allow(dead_code)]
@@ -66,6 +91,19 @@ pub struct QueryFull {
     pub(crate) stdin: Option<Arc<Mutex<Option<tokio::process::ChildStdin>>>>,
     // Store initialization result for get_server_info()
     initialization_result: Arc<Mutex<Option<serde_json::Value>>>,
+    // SessionStore mirroring, attached via `set_transcript_mirror_batcher`
+    // before `start()`. `None` when no `session_store` option is configured.
+    transcript_mirror_batcher: Arc<Mutex<Option<Arc<TranscriptMirrorBatcher>>>>,
+    // Task IDs of started-but-not-finished delegated agent tasks; see
+    // `run_lifecycle` module docs (upstream issue #1088).
+    inflight_tasks: Arc<Mutex<HashSet<String>>>,
+    // Fires once a run-ending result (no tasks in flight) arrives, or the
+    // read loop exits for any other reason.
+    run_ended: Arc<RunEndedSignal>,
+    // Handle to the background read task. Awaited (bounded) during close()
+    // so the transport lock it holds for the whole read loop is released
+    // before close() tries to close the transport itself.
+    read_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl QueryFull {
@@ -84,7 +122,40 @@ impl QueryFull {
             message_rx: Arc::new(Mutex::new(message_rx)),
             stdin: None,
             initialization_result: Arc::new(Mutex::new(None)),
+            transcript_mirror_batcher: Arc::new(Mutex::new(None)),
+            inflight_tasks: Arc::new(Mutex::new(HashSet::new())),
+            run_ended: Arc::new(RunEndedSignal::new()),
+            read_task: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Attach a batcher that receives `transcript_mirror` frames.
+    ///
+    /// Call before [`Self::start`]. When set, the read loop peels
+    /// `transcript_mirror` frames off stdout (they are not yielded to
+    /// consumers), enqueues them on the batcher, and flushes before
+    /// forwarding each `result` message.
+    pub async fn set_transcript_mirror_batcher(&self, batcher: Arc<TranscriptMirrorBatcher>) {
+        *self.transcript_mirror_batcher.lock().await = Some(batcher);
+    }
+
+    /// A clone of the outgoing message sender, for callers that need to
+    /// feed a synthetic message into the stream before they have a
+    /// `QueryFull` handle to call [`Self::report_mirror_error`] on (see
+    /// `build_mirror_error_message`'s doc comment).
+    pub(crate) fn message_sender(&self) -> mpsc::UnboundedSender<serde_json::Value> {
+        self.message_tx.clone()
+    }
+
+    /// Surface a `SessionStore::append` failure as a `mirror_error` system
+    /// message fed back into the message stream.
+    ///
+    /// Called from the batcher's `on_error`; the dropped batch is not
+    /// retried (at-most-once delivery), so this is the consumer's only
+    /// signal. Non-blocking — the channel is unbounded, so this never
+    /// stalls the caller.
+    pub fn report_mirror_error(&self, key: Option<SessionKey>, error: String) {
+        let _ = self.message_tx.send(build_mirror_error_message(key, error));
     }
 
     /// Set stdin for direct write access (called from client after transport is connected)
@@ -97,10 +168,19 @@ impl QueryFull {
         *self.sdk_mcp_servers.lock().await = servers;
     }
 
-    /// Initialize with hooks
+    /// Initialize with hooks, custom agent definitions, skill selection, and
+    /// the preset-system-prompt `exclude_dynamic_sections` flag.
+    ///
+    /// Agent definitions and skills are sent here (not as CLI argv) matching
+    /// the TypeScript SDK and upstream Python's `_internal/query.py`
+    /// `initialize()` — an earlier Rust implementation sent `agents` via a
+    /// `--agents` CLI flag, which upstream deliberately moved away from.
     pub async fn initialize(
         &self,
         hooks: Option<HashMap<String, Vec<HookMatcher>>>,
+        agents: Option<&HashMap<String, crate::types::config::AgentDefinition>>,
+        skills: Option<&crate::types::config::SkillsSelector>,
+        exclude_dynamic_sections: Option<bool>,
     ) -> Result<serde_json::Value> {
         // Build hooks configuration
         let mut hooks_config: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
@@ -142,10 +222,24 @@ impl QueryFull {
         }
 
         // Send initialize request
-        let request = json!({
+        let mut request = json!({
             "subtype": "initialize",
             "hooks": if hooks_config.is_empty() { json!(null) } else { json!(hooks_config) }
         });
+
+        if let Some(agents) = agents
+            && !agents.is_empty()
+        {
+            request["agents"] = json!(agents);
+        }
+        if let Some(eds) = exclude_dynamic_sections {
+            request["excludeDynamicSections"] = json!(eds);
+        }
+        // "all" and omitted are equivalent at the wire level (no filter), so
+        // only send the field for an explicit list, matching upstream.
+        if let Some(crate::types::config::SkillsSelector::List(names)) = skills {
+            request["skills"] = json!(names);
+        }
 
         let response = self.send_control_request(request).await?;
 
@@ -163,11 +257,14 @@ impl QueryFull {
         let pending_responses = Arc::clone(&self.pending_responses);
         let message_tx = self.message_tx.clone();
         let stdin = self.stdin.clone();
+        let transcript_mirror_batcher = Arc::clone(&self.transcript_mirror_batcher);
+        let inflight_tasks = Arc::clone(&self.inflight_tasks);
+        let run_ended = Arc::clone(&self.run_ended);
 
         // Create a channel to signal when background task is ready
         let (ready_tx, ready_rx) = oneshot::channel();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut transport_guard = transport.lock().await;
             let mut stream = transport_guard.read_messages();
 
@@ -215,7 +312,69 @@ impl QueryFull {
                                     });
                                 }
                             },
+                            Some("transcript_mirror") => {
+                                // SessionStore write path: peel mirror frames
+                                // off stdout and hand to the batcher; do NOT
+                                // yield them to consumers.
+                                let batcher = transcript_mirror_batcher.lock().await.clone();
+                                if let Some(batcher) = batcher {
+                                    let file_path = message
+                                        .get("filePath")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    let entries = message
+                                        .get("entries")
+                                        .cloned()
+                                        .and_then(|v| serde_json::from_value(v).ok())
+                                        .unwrap_or_default();
+                                    batcher.enqueue(file_path, entries);
+                                }
+                            },
                             _ => {
+                                // Track task-lifecycle frames so results can
+                                // tell "one turn ended" apart from "the run
+                                // is done" (see run_lifecycle module docs,
+                                // upstream issue #1088).
+                                if msg_type == Some("system") {
+                                    let subtype =
+                                        message.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                                    let task_id = message.get("task_id").and_then(|v| v.as_str());
+                                    let task_type = message.get("task_type").and_then(|v| v.as_str());
+                                    let patch_status = message
+                                        .get("patch")
+                                        .and_then(|p| p.get("status"))
+                                        .and_then(|v| v.as_str());
+                                    let mut inflight = inflight_tasks.lock().await;
+                                    track_task_lifecycle(
+                                        &mut inflight,
+                                        subtype,
+                                        task_id,
+                                        task_type,
+                                        patch_status,
+                                    );
+                                }
+
+                                if msg_type == Some("result") {
+                                    // Flush pending transcript-mirror entries
+                                    // before forwarding the result so
+                                    // consumers observing it can rely on the
+                                    // SessionStore being up to date for this
+                                    // turn.
+                                    let batcher = transcript_mirror_batcher.lock().await.clone();
+                                    if let Some(batcher) = batcher {
+                                        batcher.flush().await;
+                                    }
+                                    let no_tasks_in_flight = inflight_tasks.lock().await.is_empty();
+                                    if no_tasks_in_flight {
+                                        run_ended.fire().await;
+                                    } else {
+                                        tracing::debug!(
+                                            "result received with tasks in flight; keeping stdin open"
+                                        );
+                                    }
+                                }
+
                                 // Regular message - send to stream
                                 let _ = message_tx.send(message);
                             },
@@ -224,7 +383,22 @@ impl QueryFull {
                     Err(_) => break,
                 }
             }
+
+            // Flush any remaining transcript-mirror entries before the read
+            // loop ends so an early stdout EOF or transport error doesn't
+            // drop entries batched this turn (belt-and-suspenders with the
+            // same flush in `close()`, for the case where the process exits
+            // before a caller calls `close()`).
+            let batcher = transcript_mirror_batcher.lock().await.clone();
+            if let Some(batcher) = batcher {
+                batcher.flush().await;
+            }
+            // Unblock any waiter (e.g. `wait_for_result_and_end_input`) so it
+            // doesn't stall forever on early exit.
+            run_ended.fire().await;
         });
+
+        *self.read_task.lock().await = Some(handle);
 
         // Wait for background task to be ready before returning
         ready_rx
@@ -232,6 +406,72 @@ impl QueryFull {
             .map_err(|_| ClaudeError::Transport("Background task failed to start".to_string()))?;
 
         Ok(())
+    }
+
+    /// Close stdin so the CLI observes EOF.
+    ///
+    /// If [`Self::sdk_mcp_servers`] or hooks were configured, callers should
+    /// prefer [`Self::wait_for_result_and_end_input`], which gates this on a
+    /// run-ending result so hook/SDK-MCP control responses aren't cut off
+    /// mid-turn.
+    pub async fn end_input(&self) -> Result<()> {
+        if let Some(ref stdin_arc) = self.stdin {
+            let mut guard = stdin_arc.lock().await;
+            if let Some(mut stdin) = guard.take() {
+                let _ = stdin.shutdown().await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Wait for a run-ending result (if needed) then close stdin.
+    ///
+    /// If SDK MCP servers or hooks require bidirectional communication,
+    /// keeps stdin open until a result arrives with no delegated agent
+    /// tasks in flight — a result frame ends one turn, not necessarily the
+    /// run: background tasks keep running past it and still need stdin for
+    /// hook/SDK-MCP control responses (see `run_lifecycle` module docs,
+    /// upstream issue #1088). No timeout is applied: the signal is
+    /// guaranteed to fire, either from a qualifying result or from the read
+    /// loop's exit path if the process ends early.
+    pub async fn wait_for_result_and_end_input(&self) -> Result<()> {
+        let needs_wait = {
+            let has_mcp_servers = !self.sdk_mcp_servers.lock().await.is_empty();
+            let has_hooks = !self.hook_callbacks.lock().await.is_empty();
+            has_mcp_servers || has_hooks
+        };
+        if needs_wait {
+            tracing::debug!("waiting for a run-ending result before closing stdin");
+            self.run_ended.wait().await;
+        }
+        self.end_input().await
+    }
+
+    /// Close the query: final-flush any pending mirrored transcript
+    /// entries, close stdin, then close the transport.
+    ///
+    /// The final mirror flush happens before transport teardown so the last
+    /// turn's mirrored entries aren't lost. Closing stdin first lets the
+    /// background read task (which holds the transport lock for the whole
+    /// read loop) observe EOF and release that lock; this method then waits
+    /// (bounded) for the read task before locking the transport itself,
+    /// rather than transport.close() racing a lock still held by the read
+    /// task.
+    pub async fn close(&self) -> Result<()> {
+        if let Some(batcher) = self.transcript_mirror_batcher.lock().await.clone() {
+            batcher.close().await;
+        }
+
+        self.end_input().await?;
+
+        if let Some(handle) = self.read_task.lock().await.take()
+            && tokio::time::timeout(Duration::from_secs(5), handle).await.is_err()
+        {
+            tracing::debug!("read task did not exit within 5s of stdin closing");
+        }
+
+        let mut transport_guard = self.transport.lock().await;
+        transport_guard.close().await
     }
 
     /// Handle incoming control request from CLI (new version using stdin directly)

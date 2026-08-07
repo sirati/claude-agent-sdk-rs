@@ -5,4 +5,5 @@ pub mod client;
 pub mod message_parser;
 pub mod pool;
 pub mod query_full;
+pub(crate) mod run_lifecycle;
 pub mod transport;

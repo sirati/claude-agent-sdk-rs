@@ -11,6 +11,9 @@ use super::mcp::McpServers;
 use super::permissions::CanUseToolCallback;
 use super::plugin::SdkPluginConfig;
 
+mod thinking;
+pub use thinking::{EffortLevel, TaskBudget, ThinkingConfig, ThinkingDisplay};
+
 /// Main configuration options for Claude Agent
 #[derive(Clone, TypedBuilder)]
 #[builder(doc)]
@@ -27,6 +30,11 @@ pub struct ClaudeAgentOptions {
     /// MCP server configuration
     #[builder(default)]
     pub mcp_servers: McpServers,
+    /// When `true`, only use MCP servers passed via `mcp_servers`, ignoring all
+    /// other MCP configurations the CLI would otherwise load (project
+    /// `.mcp.json`, user/global settings, plugin-provided servers).
+    #[builder(default = false)]
+    pub strict_mcp_config: bool,
     /// Permission mode
     #[builder(default, setter(strip_option))]
     pub permission_mode: Option<PermissionMode>,
@@ -36,6 +44,11 @@ pub struct ClaudeAgentOptions {
     /// Session ID to resume
     #[builder(default, setter(into, strip_option))]
     pub resume: Option<String>,
+    /// Use a specific session ID for the conversation instead of an
+    /// auto-generated one. Must be a valid UUID. Cannot be used with
+    /// `continue_conversation` or `resume` unless `fork_session` is also set.
+    #[builder(default, setter(into, strip_option))]
+    pub session_id: Option<String>,
     /// Maximum number of turns
     #[builder(default, setter(strip_option))]
     pub max_turns: Option<u32>,
@@ -110,6 +123,10 @@ pub struct ClaudeAgentOptions {
     /// Whether to include partial messages in stream
     #[builder(default = false)]
     pub include_partial_messages: bool,
+    /// Include hook lifecycle events (PreToolUse, PostToolUse, Stop, etc.) as
+    /// system messages in the output stream.
+    #[builder(default = false)]
+    pub include_hook_events: bool,
     /// Whether to fork the session
     #[builder(default = false)]
     pub fork_session: bool,
@@ -204,6 +221,22 @@ pub struct ClaudeAgentOptions {
     /// Default: `ParsingMode::Traditional` (for backward compatibility)
     #[builder(default)]
     pub parsing_mode: crate::internal::message_parser::ParsingMode,
+    /// Controls Claude's thinking/reasoning behavior.
+    ///
+    /// Takes precedence over the deprecated `max_thinking_tokens` when set.
+    #[builder(default, setter(strip_option))]
+    pub thinking: Option<ThinkingConfig>,
+    /// Controls how much effort Claude puts into its response.
+    ///
+    /// Works with adaptive thinking to guide thinking depth.
+    #[builder(default, setter(strip_option))]
+    pub effort: Option<EffortLevel>,
+    /// API-side task budget in tokens.
+    ///
+    /// When set, the model is made aware of its remaining token budget so it
+    /// can pace tool use and wrap up before the limit.
+    #[builder(default, setter(strip_option))]
+    pub task_budget: Option<TaskBudget>,
 }
 
 impl Default for ClaudeAgentOptions {
@@ -220,6 +253,8 @@ pub enum SystemPrompt {
     Text(String),
     /// Preset-based prompt
     Preset(SystemPromptPreset),
+    /// System prompt loaded from a file
+    File(SystemPromptFile),
 }
 
 impl From<String> for SystemPrompt {
@@ -267,6 +302,26 @@ impl SystemPromptPreset {
     }
 }
 
+/// System prompt loaded from a file on disk
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemPromptFile {
+    /// Type field (always "file")
+    #[serde(rename = "type")]
+    pub type_: String,
+    /// Path to the file containing the system prompt
+    pub path: String,
+}
+
+impl SystemPromptFile {
+    /// Create a new system prompt file reference
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            type_: "file".to_string(),
+            path: path.into(),
+        }
+    }
+}
+
 /// Permission mode for tool execution
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -281,6 +336,10 @@ pub enum PermissionMode {
     Plan,
     /// Bypass all permissions
     BypassPermissions,
+    /// Don't prompt for permissions; deny if not pre-approved
+    DontAsk,
+    /// Automatically choose the permission behavior
+    Auto,
 }
 
 /// Controls which filesystem-based configuration sources the SDK loads settings from.
@@ -382,6 +441,25 @@ impl ToolsPreset {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TypedBuilder)]
 #[builder(doc)]
 pub struct SandboxNetworkConfig {
+    /// Domain names that sandboxed processes can access
+    #[serde(skip_serializing_if = "Option::is_none", rename = "allowedDomains")]
+    #[builder(default, setter(into, strip_option))]
+    pub allowed_domains: Option<Vec<String>>,
+
+    /// Domains that are always blocked, even if matched by `allowed_domains`
+    #[serde(skip_serializing_if = "Option::is_none", rename = "deniedDomains")]
+    #[builder(default, setter(into, strip_option))]
+    pub denied_domains: Option<Vec<String>>,
+
+    /// When true in managed settings, only managed-settings `allowedDomains`
+    /// are respected
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "allowManagedDomainsOnly"
+    )]
+    #[builder(default, setter(strip_option))]
+    pub allow_managed_domains_only: Option<bool>,
+
     /// Unix socket paths accessible in sandbox (e.g., SSH agents)
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowUnixSockets")]
     #[builder(default, setter(into, strip_option))]
@@ -399,6 +477,11 @@ pub struct SandboxNetworkConfig {
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowLocalBinding")]
     #[builder(default, setter(strip_option))]
     pub allow_local_binding: Option<bool>,
+
+    /// macOS only: XPC/Mach service names to allow (supports trailing wildcard)
+    #[serde(skip_serializing_if = "Option::is_none", rename = "allowMachLookup")]
+    #[builder(default, setter(into, strip_option))]
+    pub allow_mach_lookup: Option<Vec<String>>,
 
     /// HTTP proxy port if bringing your own proxy
     #[serde(skip_serializing_if = "Option::is_none", rename = "httpProxyPort")]

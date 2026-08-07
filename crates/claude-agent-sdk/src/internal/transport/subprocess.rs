@@ -123,6 +123,15 @@ impl BufferMetricsSnapshot {
     }
 }
 
+/// Map a `ThinkingDisplay` to the CLI's `--thinking-display` value.
+fn thinking_display_str(display: crate::types::config::ThinkingDisplay) -> &'static str {
+    use crate::types::config::ThinkingDisplay;
+    match display {
+        ThinkingDisplay::Summarized => "summarized",
+        ThinkingDisplay::Omitted => "omitted",
+    }
+}
+
 /// Query prompt type
 #[derive(Clone)]
 pub enum QueryPrompt {
@@ -522,6 +531,10 @@ impl SubprocessTransport {
                     }
                     // Note: preset.preset field is ignored - CLI uses default prompt
                 },
+                crate::types::config::SystemPrompt::File(file) => {
+                    args.push("--system-prompt-file".to_string());
+                    args.push(file.path.clone());
+                },
             }
         }
 
@@ -552,9 +565,17 @@ impl SubprocessTransport {
                 crate::types::config::PermissionMode::AcceptEdits => "acceptEdits",
                 crate::types::config::PermissionMode::Plan => "plan",
                 crate::types::config::PermissionMode::BypassPermissions => "bypassPermissions",
+                crate::types::config::PermissionMode::DontAsk => "dontAsk",
+                crate::types::config::PermissionMode::Auto => "auto",
             };
             args.push("--permission-mode".to_string());
             args.push(mode_str.to_string());
+        }
+
+        // Only use MCP servers passed via mcp_servers, ignoring other CLI-loaded
+        // MCP configuration (project .mcp.json, user/global settings, plugins)
+        if self.options.strict_mcp_config {
+            args.push("--strict-mcp-config".to_string());
         }
 
         // Add allowed tools (Python SDK uses --allowedTools with comma-separated values)
@@ -601,10 +622,56 @@ impl SubprocessTransport {
             args.push(max_budget.to_string());
         }
 
-        // Add max thinking tokens
-        if let Some(max_thinking) = self.options.max_thinking_tokens {
+        // Add task budget
+        if let Some(ref task_budget) = self.options.task_budget {
+            args.push("--task-budget".to_string());
+            args.push(task_budget.total.to_string());
+        }
+
+        // Resolve thinking config -> --thinking / --thinking-display /
+        // --max-thinking-tokens. `thinking` takes precedence over the
+        // deprecated `max_thinking_tokens`.
+        if let Some(ref thinking) = self.options.thinking {
+            use crate::types::config::ThinkingConfig;
+            match thinking {
+                ThinkingConfig::Adaptive { display } => {
+                    args.push("--thinking".to_string());
+                    args.push("adaptive".to_string());
+                    if let Some(display) = display {
+                        args.push("--thinking-display".to_string());
+                        args.push(thinking_display_str(*display).to_string());
+                    }
+                },
+                ThinkingConfig::Enabled { budget_tokens, display } => {
+                    args.push("--max-thinking-tokens".to_string());
+                    args.push(budget_tokens.to_string());
+                    if let Some(display) = display {
+                        args.push("--thinking-display".to_string());
+                        args.push(thinking_display_str(*display).to_string());
+                    }
+                },
+                ThinkingConfig::Disabled => {
+                    args.push("--thinking".to_string());
+                    args.push("disabled".to_string());
+                },
+            }
+        } else if let Some(max_thinking) = self.options.max_thinking_tokens {
             args.push("--max-thinking-tokens".to_string());
             args.push(max_thinking.to_string());
+        }
+
+        // Add effort level
+        if let Some(effort) = self.options.effort {
+            use crate::types::config::EffortLevel;
+            let effort_str = match effort {
+                EffortLevel::Low => "low",
+                EffortLevel::Medium => "medium",
+                EffortLevel::High => "high",
+                EffortLevel::XHigh => "xhigh",
+                EffortLevel::Max => "max",
+            };
+            args.push("--effort".to_string());
+            args.push(effort_str.to_string());
         }
 
         // Add permission prompt tool name
@@ -629,10 +696,18 @@ impl SubprocessTransport {
             args.push(max_turns.to_string());
         }
 
-        // Add resume session
-        if let Some(ref session_id) = self.options.resume {
-            args.push("--resume".to_string());
-            args.push(session_id.clone());
+        // Add resume session. Passed as --flag=value rather than two argv
+        // tokens: the CLI declares --resume with an optional value, so in the
+        // two-token form a dash-leading value would not bind to the flag and
+        // could be parsed as a separate flag instead. The equals form always
+        // binds the value to the flag.
+        if let Some(ref resume) = self.options.resume {
+            args.push(format!("--resume={resume}"));
+        }
+
+        // Add explicit session ID (same equals-form rationale as --resume)
+        if let Some(ref session_id) = self.options.session_id {
+            args.push(format!("--session-id={session_id}"));
         }
 
         // Add continue conversation
@@ -656,6 +731,11 @@ impl SubprocessTransport {
         // Add include partial messages
         if self.options.include_partial_messages {
             args.push("--include-partial-messages".to_string());
+        }
+
+        // Add include hook events
+        if self.options.include_hook_events {
+            args.push("--include-hook-events".to_string());
         }
 
         // Add fork session
@@ -692,12 +772,6 @@ impl SubprocessTransport {
                 args.push("--plugin-dir".to_string());
                 args.push(path.display().to_string());
             }
-        }
-
-        // Add additional directories
-        for dir in &self.options.add_dirs {
-            args.push("--add-dir".to_string());
-            args.push(dir.display().to_string());
         }
 
         // Add extra args
@@ -1160,5 +1234,73 @@ impl Drop for SubprocessTransport {
         if let Some(mut process) = self.process.take() {
             let _ = process.start_kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::config::{ClaudeAgentOptions, EffortLevel, TaskBudget, ThinkingConfig};
+
+    /// Avoids CLI lookup during construction: `cli_path` is set explicitly, so
+    /// `SubprocessTransport::new()` never has to probe PATH.
+    fn transport_with(options: ClaudeAgentOptions) -> SubprocessTransport {
+        SubprocessTransport::new(QueryPrompt::Streaming, options).expect("transport")
+    }
+
+    #[test]
+    fn build_command_includes_strict_mcp_config_session_id_and_hook_events() {
+        let options = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .strict_mcp_config(true)
+            .session_id("11111111-1111-1111-1111-111111111111")
+            .include_hook_events(true)
+            .build();
+        let args = transport_with(options).build_command();
+
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+        assert!(args.contains(&"--session-id=11111111-1111-1111-1111-111111111111".to_string()));
+        assert!(args.contains(&"--include-hook-events".to_string()));
+    }
+
+    #[test]
+    fn build_command_includes_effort_and_task_budget() {
+        let options = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .effort(EffortLevel::XHigh)
+            .task_budget(TaskBudget { total: 5000 })
+            .build();
+        let args = transport_with(options).build_command();
+
+        assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
+        assert!(args.windows(2).any(|w| w == ["--task-budget", "5000"]));
+    }
+
+    #[test]
+    fn build_command_thinking_takes_precedence_over_max_thinking_tokens() {
+        let options = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .max_thinking_tokens(1000)
+            .thinking(ThinkingConfig::Enabled {
+                budget_tokens: 4096,
+                display: None,
+            })
+            .build();
+        let args = transport_with(options).build_command();
+
+        assert!(args.windows(2).any(|w| w == ["--max-thinking-tokens", "4096"]));
+        assert!(!args.contains(&"1000".to_string()));
+    }
+
+    #[test]
+    fn build_command_resume_uses_equals_form() {
+        let options = ClaudeAgentOptions::builder()
+            .cli_path(PathBuf::from("claude"))
+            .resume("some-session")
+            .build();
+        let args = transport_with(options).build_command();
+
+        assert!(args.contains(&"--resume=some-session".to_string()));
+        assert!(!args.contains(&"--resume".to_string()));
     }
 }

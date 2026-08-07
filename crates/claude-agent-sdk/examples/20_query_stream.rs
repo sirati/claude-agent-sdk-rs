@@ -93,6 +93,12 @@ async fn main() -> anyhow::Result<()> {
                                 println!("  Image (url): {}", url);
                             },
                         },
+                        ContentBlock::ServerToolUse(tool) => {
+                            println!("  Server Tool: {} ({})", tool.name, tool.id);
+                        },
+                        ContentBlock::ServerToolResult(result) => {
+                            println!("  Server Tool Result: {}", result.tool_use_id);
+                        },
                     }
                 }
                 println!();

@@ -409,4 +409,62 @@ mod tests {
         // Default should be Traditional
         assert_eq!(ParsingMode::default(), ParsingMode::Traditional);
     }
+
+    #[test]
+    fn test_unknown_message_type_does_not_error() {
+        // Regression test for the crash where the CLI's rate_limit_event line
+        // (or any future message type) made parse_message/MessageParser fail
+        // on every query. Unrecognized types must parse successfully into
+        // Message::Unknown instead of erroring, so the stream keeps going.
+        let json = serde_json::json!({
+            "type": "some_future_message_type_v99",
+            "anything": "goes"
+        });
+
+        let result = MessageParser::parse(json);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), Message::Unknown));
+    }
+
+    #[test]
+    fn test_rate_limit_event_parses_as_typed_variant() {
+        // The CLI emits this on every query for claude.ai subscription
+        // users; it must not be treated as an unknown type since we model
+        // it explicitly.
+        let json = serde_json::json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed_warning",
+                "resetsAt": 1_700_000_000,
+                "rateLimitType": "five_hour",
+                "utilization": 0.87
+            },
+            "uuid": "evt-1",
+            "session_id": "sess-1"
+        });
+
+        let result = MessageParser::parse(json);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Message::RateLimitEvent(event) => {
+                assert_eq!(event.rate_limit_info.status, "allowed_warning");
+                assert_eq!(event.rate_limit_info.resets_at, Some(1_700_000_000));
+                assert_eq!(
+                    event.rate_limit_info.rate_limit_type,
+                    Some("five_hour".to_string())
+                );
+                assert_eq!(event.uuid, "evt-1");
+                assert_eq!(event.session_id, "sess-1");
+            }
+            other => panic!("Expected RateLimitEvent, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_zero_copy_parser_unknown_type_does_not_error() {
+        let json = r#"{"type":"a_type_from_the_future","x":1}"#;
+        let result = ZeroCopyMessageParser::parse(json);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), Message::Unknown));
+    }
 }

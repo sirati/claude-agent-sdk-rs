@@ -48,6 +48,20 @@ pub enum Message {
     /// Control cancel request (ignore this - it's internal control protocol)
     #[serde(rename = "control_cancel_request")]
     ControlCancelRequest(serde_json::Value),
+    /// Rate limit status changed (emitted for claude.ai subscription users)
+    #[serde(rename = "rate_limit_event")]
+    RateLimitEvent(RateLimitEvent),
+    /// Any message `type` this SDK version doesn't recognize yet.
+    ///
+    /// The CLI is forward-compatible: it may start emitting new message
+    /// types before the SDK is updated to understand them. Rather than
+    /// failing the whole stream (as older versions of this parser did,
+    /// which crashed on every query once the CLI began emitting
+    /// `rate_limit_event`), unrecognized types are captured here so
+    /// callers can skip them. Mirrors the Python SDK's `parse_message`
+    /// returning `None` for unknown types.
+    #[serde(other)]
+    Unknown,
 }
 
 /// User message
@@ -170,6 +184,363 @@ pub struct SystemMessage {
     pub data: serde_json::Value,
 }
 
+impl SystemMessage {
+    /// Classify this generic system message into a more specific subtype
+    /// based on `subtype`, mirroring the CLI's `system`/`subtype` routing.
+    ///
+    /// Falls back to [`SystemMessageKind::Generic`] when the subtype is
+    /// unrecognized, or when a subtype that requires fields this SDK
+    /// considers mandatory is missing them — classification never fails
+    /// the surrounding message parse, it just declines to specialize.
+    pub fn classify(&self) -> SystemMessageKind {
+        match self.subtype.as_str() {
+            "task_started" => self
+                .extract_task_started()
+                .map(SystemMessageKind::TaskStarted)
+                .unwrap_or(SystemMessageKind::Generic),
+            "task_progress" => self
+                .extract_task_progress()
+                .map(SystemMessageKind::TaskProgress)
+                .unwrap_or(SystemMessageKind::Generic),
+            "task_notification" => self
+                .extract_task_notification()
+                .map(SystemMessageKind::TaskNotification)
+                .unwrap_or(SystemMessageKind::Generic),
+            "task_updated" => SystemMessageKind::TaskUpdated(self.extract_task_updated()),
+            "mirror_error" => SystemMessageKind::MirrorError(self.extract_mirror_error()),
+            "hook_started" | "hook_response" => {
+                SystemMessageKind::HookEvent(self.extract_hook_event())
+            }
+            _ => SystemMessageKind::Generic,
+        }
+    }
+
+    fn extract_task_started(&self) -> Option<TaskStartedMessage> {
+        Some(TaskStartedMessage {
+            task_id: self.data.get("task_id")?.as_str()?.to_string(),
+            description: self.data.get("description")?.as_str()?.to_string(),
+            uuid: self.uuid.clone()?,
+            session_id: self.session_id.clone()?,
+            tool_use_id: str_field(&self.data, "tool_use_id"),
+            task_type: str_field(&self.data, "task_type"),
+        })
+    }
+
+    fn extract_task_progress(&self) -> Option<TaskProgressMessage> {
+        Some(TaskProgressMessage {
+            task_id: self.data.get("task_id")?.as_str()?.to_string(),
+            description: self.data.get("description")?.as_str()?.to_string(),
+            usage: serde_json::from_value(self.data.get("usage")?.clone()).ok()?,
+            uuid: self.uuid.clone()?,
+            session_id: self.session_id.clone()?,
+            tool_use_id: str_field(&self.data, "tool_use_id"),
+            last_tool_name: str_field(&self.data, "last_tool_name"),
+        })
+    }
+
+    fn extract_task_notification(&self) -> Option<TaskNotificationMessage> {
+        Some(TaskNotificationMessage {
+            task_id: self.data.get("task_id")?.as_str()?.to_string(),
+            status: self.data.get("status")?.as_str()?.to_string(),
+            output_file: self.data.get("output_file")?.as_str()?.to_string(),
+            summary: self.data.get("summary")?.as_str()?.to_string(),
+            uuid: self.uuid.clone()?,
+            session_id: self.session_id.clone()?,
+            tool_use_id: str_field(&self.data, "tool_use_id"),
+            usage: self
+                .data
+                .get("usage")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        })
+    }
+
+    fn extract_task_updated(&self) -> TaskUpdatedMessage {
+        // Parsed defensively: the patch may omit uuid/session_id and
+        // parsing must never fail on a lifecycle event.
+        let patch = self
+            .data
+            .get("patch")
+            .filter(|v| v.is_object())
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let status = patch.get("status").and_then(|v| v.as_str()).map(String::from);
+        TaskUpdatedMessage {
+            task_id: str_field(&self.data, "task_id").unwrap_or_default(),
+            patch,
+            status,
+            session_id: self.session_id.clone(),
+            uuid: self.uuid.clone(),
+        }
+    }
+
+    fn extract_mirror_error(&self) -> MirrorErrorMessage {
+        MirrorErrorMessage {
+            key: self.data.get("key").cloned(),
+            error: str_field(&self.data, "error").unwrap_or_default(),
+        }
+    }
+
+    fn extract_hook_event(&self) -> HookEventMessage {
+        // Fallback chain matches the CLI's own inconsistent naming across
+        // versions: hook_event, then hook_name, then hook_event_name.
+        let hook_event_name = str_field(&self.data, "hook_event")
+            .or_else(|| str_field(&self.data, "hook_name"))
+            .or_else(|| str_field(&self.data, "hook_event_name"))
+            .unwrap_or_default();
+        HookEventMessage {
+            hook_event_name,
+            session_id: self.session_id.clone(),
+            uuid: self.uuid.clone(),
+        }
+    }
+}
+
+/// Read a string field out of a `serde_json::Value` object, if present.
+fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value.get(key).and_then(|v| v.as_str()).map(String::from)
+}
+
+/// Specific system-message subtype, obtained via [`SystemMessage::classify`].
+///
+/// The Python SDK models these as `SystemMessage` subclasses; Rust has no
+/// inheritance, so each specific type carries only its own fields and is
+/// reached by classifying the always-present [`SystemMessage`] rather than
+/// replacing it in the [`Message`] enum. `Message::System` continues to
+/// carry the raw `SystemMessage` regardless of subtype.
+#[derive(Debug, Clone)]
+pub enum SystemMessageKind {
+    /// A background task started (`subtype: "task_started"`)
+    TaskStarted(TaskStartedMessage),
+    /// A background task reported progress (`subtype: "task_progress"`)
+    TaskProgress(TaskProgressMessage),
+    /// A background task completed, failed, or was stopped
+    /// (`subtype: "task_notification"`)
+    TaskNotification(TaskNotificationMessage),
+    /// A background task's state changed (`subtype: "task_updated"`)
+    TaskUpdated(TaskUpdatedMessage),
+    /// A `SessionStore.append` call failed, non-fatally
+    /// (`subtype: "mirror_error"`)
+    MirrorError(MirrorErrorMessage),
+    /// A hook lifecycle event (`subtype: "hook_started"` / `"hook_response"`)
+    HookEvent(HookEventMessage),
+    /// Any other subtype (e.g. "init"); use the base [`SystemMessage`] fields.
+    Generic,
+}
+
+/// Usage statistics reported in `task_progress` and `task_notification`
+/// messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskUsage {
+    /// Total tokens consumed by the task so far
+    pub total_tokens: u64,
+    /// Number of tool calls made by the task so far
+    pub tool_uses: u64,
+    /// Task duration so far, in milliseconds
+    pub duration_ms: u64,
+}
+
+/// System message emitted when a background task starts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStartedMessage {
+    /// ID of the started task
+    pub task_id: String,
+    /// Human-readable description of the task
+    pub description: String,
+    /// Unique ID of this event
+    pub uuid: String,
+    /// Session ID the task belongs to
+    pub session_id: String,
+    /// Tool use ID that spawned the task, if applicable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// Task type, if reported
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_type: Option<String>,
+}
+
+/// System message emitted while a background task is in progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskProgressMessage {
+    /// ID of the task
+    pub task_id: String,
+    /// Human-readable description of the task
+    pub description: String,
+    /// Usage statistics so far
+    pub usage: TaskUsage,
+    /// Unique ID of this event
+    pub uuid: String,
+    /// Session ID the task belongs to
+    pub session_id: String,
+    /// Tool use ID that spawned the task, if applicable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// Name of the last tool the task invoked
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+}
+
+/// System message emitted when a background task completes, fails, or is
+/// stopped.
+///
+/// Not every terminal task emits this message — some report completion
+/// only via a [`TaskUpdatedMessage`] whose `patch.status` is terminal.
+/// Consumers tracking active task IDs should clear them on a terminal
+/// status from either message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskNotificationMessage {
+    /// ID of the task
+    pub task_id: String,
+    /// Terminal status ("completed", "failed", or "stopped")
+    pub status: String,
+    /// Path to the task's output file
+    pub output_file: String,
+    /// Short summary of the task's outcome
+    pub summary: String,
+    /// Unique ID of this event
+    pub uuid: String,
+    /// Session ID the task belongs to
+    pub session_id: String,
+    /// Tool use ID that spawned the task, if applicable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// Usage statistics at completion, if reported
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TaskUsage>,
+}
+
+/// System message emitted when a background task's state changes.
+///
+/// `patch` carries the changed fields (e.g. `status`, `end_time`); when
+/// `patch.status` is terminal ("completed", "failed", or "killed") the
+/// task has finished. A background task's terminal state can arrive only
+/// as a `TaskUpdatedMessage` with no accompanying
+/// [`TaskNotificationMessage`] — for example a task stopped via TaskStop
+/// reports `status: "killed"` here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskUpdatedMessage {
+    /// ID of the task (empty string if the CLI omitted it)
+    pub task_id: String,
+    /// Raw patch of changed fields
+    pub patch: serde_json::Value,
+    /// Status extracted from `patch.status`, if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Session ID the task belongs to, if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Unique ID of this event, if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+}
+
+/// System message emitted when a `SessionStore.append` call fails.
+///
+/// Non-fatal — the local-disk transcript is already durable, so the
+/// session continues unaffected. The mirrored copy in the external store
+/// will be missing the failed batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MirrorErrorMessage {
+    /// Key identifying the session/subagent transcript that failed to mirror
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<serde_json::Value>,
+    /// Error message
+    pub error: String,
+}
+
+/// Hook event emitted by the CLI when `include_hook_events` is enabled.
+///
+/// These arrive on the wire as `{"type": "system", "subtype":
+/// "hook_started" | "hook_response", "hook_event": "PreToolUse", ...}`
+/// (or `hook_name` / `hook_event_name` on older CLI versions — see the
+/// fallback chain in [`SystemMessage::classify`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookEventMessage {
+    /// Name of the hook event (e.g. "PreToolUse", "PostToolUse", "Stop")
+    pub hook_event_name: String,
+    /// Session ID the event belongs to, if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Unique ID of the event, if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+}
+
+/// Rate limit status emitted by the CLI when rate limit state changes.
+///
+/// See <https://docs.claude.com/en/docs/claude-code/rate-limits>.
+///
+/// Deserialized by hand (see the `Deserialize` impl below) rather than via
+/// derive: `raw` must capture the *entire* incoming object verbatim
+/// (matching Python's `raw=info`), not just fields left over after the
+/// named ones are matched — `#[serde(flatten)]` only gives the leftovers.
+#[derive(Debug, Clone, Serialize)]
+pub struct RateLimitInfo {
+    /// Current rate limit status ("allowed", "allowed_warning", or
+    /// "rejected"). `allowed_warning` means approaching the limit;
+    /// `rejected` means the limit has been hit.
+    pub status: String,
+    /// Unix timestamp when the rate limit window resets
+    #[serde(skip_serializing_if = "Option::is_none", rename = "resetsAt")]
+    pub resets_at: Option<i64>,
+    /// Which rate limit window applies (e.g. "five_hour", "seven_day")
+    #[serde(skip_serializing_if = "Option::is_none", rename = "rateLimitType")]
+    pub rate_limit_type: Option<String>,
+    /// Fraction of the rate limit consumed (0.0 - 1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<f64>,
+    /// Status of overage/pay-as-you-go usage, if applicable
+    #[serde(skip_serializing_if = "Option::is_none", rename = "overageStatus")]
+    pub overage_status: Option<String>,
+    /// Unix timestamp when the overage window resets
+    #[serde(skip_serializing_if = "Option::is_none", rename = "overageResetsAt")]
+    pub overage_resets_at: Option<i64>,
+    /// Why overage is unavailable if status is rejected
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "overageDisabledReason"
+    )]
+    pub overage_disabled_reason: Option<String>,
+    /// Full raw payload from the CLI, including any fields not modeled above
+    pub raw: serde_json::Value,
+}
+
+impl<'de> serde::Deserialize<'de> for RateLimitInfo {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let status = str_field(&raw, "status")
+            .ok_or_else(|| serde::de::Error::missing_field("status"))?;
+        Ok(RateLimitInfo {
+            status,
+            resets_at: raw.get("resetsAt").and_then(|v| v.as_i64()),
+            rate_limit_type: str_field(&raw, "rateLimitType"),
+            utilization: raw.get("utilization").and_then(|v| v.as_f64()),
+            overage_status: str_field(&raw, "overageStatus"),
+            overage_resets_at: raw.get("overageResetsAt").and_then(|v| v.as_i64()),
+            overage_disabled_reason: str_field(&raw, "overageDisabledReason"),
+            raw,
+        })
+    }
+}
+
+/// Rate limit event emitted when rate limit info changes.
+///
+/// The CLI emits this whenever the rate limit status transitions (e.g.
+/// from "allowed" to "allowed_warning"). Use this to warn users before
+/// they hit a hard limit, or to gracefully back off when
+/// `rate_limit_info.status == "rejected"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitEvent {
+    /// The rate limit status that triggered this event
+    pub rate_limit_info: RateLimitInfo,
+    /// Unique ID of this event
+    pub uuid: String,
+    /// Session ID this event belongs to
+    pub session_id: String,
+}
+
 /// Result message indicating query completion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultMessage {
@@ -185,6 +556,9 @@ pub struct ResultMessage {
     pub num_turns: u32,
     /// Session ID
     pub session_id: String,
+    /// Why the agentic loop stopped (e.g. "end_turn", "max_turns")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
     /// Total cost in USD
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
@@ -197,6 +571,83 @@ pub struct ResultMessage {
     /// Structured output (when output_format is specified)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structured_output: Option<serde_json::Value>,
+    /// Per-model token usage and cost breakdown
+    #[serde(skip_serializing_if = "Option::is_none", rename = "modelUsage")]
+    pub model_usage: Option<std::collections::HashMap<String, ModelUsage>>,
+    /// Permission decisions that denied a tool call during this run
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_denials: Option<Vec<serde_json::Value>>,
+    /// Tool use deferred by a PreToolUse hook returning "defer"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred_tool_use: Option<DeferredToolUse>,
+    /// Non-fatal errors collected during the run
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<String>>,
+    /// HTTP status code of the failing API call when `is_error` is true
+    /// and `subtype` is "success"; `None` otherwise. Safe to log (no
+    /// message content). Emitted by the CLI since v2.1.110.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_error_status: Option<i32>,
+    /// Unique ID of this result event
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    /// Why the query loop terminated (e.g. "completed", "max_turns",
+    /// "aborted_streaming", "aborted_tools"). `None` when the CLI did not
+    /// report a terminal reason (older CLI versions, or a result that
+    /// bypassed the query loop such as a local slash command).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<String>,
+}
+
+/// Tool use that was deferred by a PreToolUse hook returning `"defer"`.
+///
+/// When a PreToolUse hook returns `permissionDecision: "defer"`, the run
+/// stops and the result message carries the deferred tool call here so the
+/// caller can inspect it and decide whether to resume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeferredToolUse {
+    /// Tool use ID
+    pub id: String,
+    /// Tool name
+    pub name: String,
+    /// Tool input parameters
+    pub input: serde_json::Value,
+}
+
+/// Per-model token usage and cost breakdown.
+///
+/// Keys match the TypeScript SDK's `ModelUsage` shape (camelCase), since
+/// the value is passed through verbatim from the CLI's `modelUsage` field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    /// Input tokens consumed
+    pub input_tokens: u64,
+    /// Output tokens produced
+    pub output_tokens: u64,
+    /// Tokens read from the prompt cache
+    pub cache_read_input_tokens: u64,
+    /// Tokens written to the prompt cache
+    pub cache_creation_input_tokens: u64,
+    /// Number of web search requests made
+    pub web_search_requests: u64,
+    /// Cost in USD
+    #[serde(rename = "costUSD")]
+    pub cost_usd: f64,
+    /// Context window size for this model
+    pub context_window: u64,
+    /// Maximum output tokens for this model
+    pub max_output_tokens: u64,
+    /// Canonical model id used for the pricing lookup (e.g.
+    /// "claude-opus-4-7"). May differ from the raw model string this entry
+    /// is keyed by (provider-specific ids, aliases).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_model: Option<String>,
+    /// API provider that served this model ("firstParty", "bedrock",
+    /// "vertex", "foundry", "anthropicAws", "anthropicGoogleCloud",
+    /// "mantle", "gateway").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// Stream event message
@@ -227,6 +678,11 @@ pub enum ContentBlock {
     ToolResult(ToolResultBlock),
     /// Image block
     Image(ImageBlock),
+    /// Server-side tool use block (e.g. advisor, web_search, web_fetch)
+    ServerToolUse(ServerToolUseBlock),
+    /// Result of a server-side tool call
+    #[serde(rename = "advisor_tool_result")]
+    ServerToolResult(ServerToolResultBlock),
 }
 
 /// Text content block
@@ -277,6 +733,35 @@ pub enum ToolResultContent {
     Text(String),
     /// Structured blocks
     Blocks(Vec<serde_json::Value>),
+}
+
+/// Server-side tool use block (e.g. advisor, web_search, web_fetch)
+///
+/// These are tools the API executes server-side on the model's behalf, so
+/// they appear in the message stream alongside regular `tool_use` blocks
+/// but the caller never needs to return a result. `name` is a
+/// discriminator — branch on it to know which server tool was invoked.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerToolUseBlock {
+    /// Tool use ID
+    pub id: String,
+    /// Server tool name (e.g. "advisor", "web_search", "web_fetch")
+    pub name: String,
+    /// Tool input parameters
+    pub input: serde_json::Value,
+}
+
+/// Result block returned for a server-side tool call
+///
+/// Mirrors `ToolResultBlock`'s shape. `content` is the raw value from the
+/// API, opaque to this layer — callers that care about a specific server
+/// tool's result schema can inspect `content["type"]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerToolResultBlock {
+    /// Tool use ID this result corresponds to
+    pub tool_use_id: String,
+    /// Result content (raw, tool-specific shape)
+    pub content: serde_json::Value,
 }
 
 /// Image source for user prompts
@@ -769,5 +1254,242 @@ mod tests {
         assert!(block.is_err());
         let err = block.unwrap_err().to_string();
         assert!(err.contains("exceeds maximum size"));
+    }
+
+    #[test]
+    fn test_message_unknown_type_is_forward_compatible() {
+        let json_str = r#"{"type":"a_type_this_sdk_has_never_heard_of","foo":"bar"}"#;
+        let msg: Message = serde_json::from_str(json_str).unwrap();
+        assert!(matches!(msg, Message::Unknown));
+    }
+
+    #[test]
+    fn test_message_rate_limit_event_deserialization() {
+        let json_str = r#"{
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "rejected",
+                "overageStatus": "allowed",
+                "overageDisabledReason": null
+            },
+            "uuid": "u1",
+            "session_id": "s1"
+        }"#;
+
+        let msg: Message = serde_json::from_str(json_str).unwrap();
+        match msg {
+            Message::RateLimitEvent(event) => {
+                assert_eq!(event.rate_limit_info.status, "rejected");
+                assert_eq!(
+                    event.rate_limit_info.overage_status,
+                    Some("allowed".to_string())
+                );
+                assert_eq!(event.rate_limit_info.resets_at, None);
+            }
+            _ => panic!("Expected RateLimitEvent variant"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_server_tool_use_deserialization() {
+        let json_str = r#"{
+            "type": "server_tool_use",
+            "id": "srvtool_1",
+            "name": "web_search",
+            "input": {"query": "rust serde"}
+        }"#;
+
+        let block: ContentBlock = serde_json::from_str(json_str).unwrap();
+        match block {
+            ContentBlock::ServerToolUse(b) => {
+                assert_eq!(b.id, "srvtool_1");
+                assert_eq!(b.name, "web_search");
+            }
+            _ => panic!("Expected ServerToolUse variant"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_server_tool_result_deserialization() {
+        let json_str = r#"{
+            "type": "advisor_tool_result",
+            "tool_use_id": "srvtool_1",
+            "content": {"type": "web_search_result", "results": []}
+        }"#;
+
+        let block: ContentBlock = serde_json::from_str(json_str).unwrap();
+        match block {
+            ContentBlock::ServerToolResult(b) => {
+                assert_eq!(b.tool_use_id, "srvtool_1");
+            }
+            _ => panic!("Expected ServerToolResult variant"),
+        }
+    }
+
+    fn system_message(subtype: &str, extra: serde_json::Value) -> SystemMessage {
+        let mut data = extra;
+        data["subtype"] = json!(subtype);
+        serde_json::from_value(data).unwrap()
+    }
+
+    #[test]
+    fn test_system_message_classify_task_started() {
+        let sys = system_message(
+            "task_started",
+            json!({
+                "task_id": "t1",
+                "description": "do the thing",
+                "uuid": "u1",
+                "session_id": "s1",
+                "task_type": "background"
+            }),
+        );
+
+        match sys.classify() {
+            SystemMessageKind::TaskStarted(t) => {
+                assert_eq!(t.task_id, "t1");
+                assert_eq!(t.description, "do the thing");
+                assert_eq!(t.task_type, Some("background".to_string()));
+            }
+            other => panic!("Expected TaskStarted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_system_message_classify_task_started_missing_required_falls_back() {
+        // Missing `description` (required) must not panic or error the
+        // surrounding parse — classification just declines to specialize.
+        let sys = system_message(
+            "task_started",
+            json!({
+                "task_id": "t1",
+                "uuid": "u1",
+                "session_id": "s1"
+            }),
+        );
+
+        assert!(matches!(sys.classify(), SystemMessageKind::Generic));
+    }
+
+    #[test]
+    fn test_system_message_classify_task_updated_is_defensive() {
+        // No uuid/session_id/patch at all - must still classify without panicking.
+        let sys = system_message("task_updated", json!({}));
+
+        match sys.classify() {
+            SystemMessageKind::TaskUpdated(t) => {
+                assert_eq!(t.task_id, "");
+                assert_eq!(t.status, None);
+                assert_eq!(t.session_id, None);
+            }
+            other => panic!("Expected TaskUpdated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_system_message_classify_task_updated_terminal_status() {
+        let sys = system_message(
+            "task_updated",
+            json!({
+                "task_id": "t1",
+                "patch": {"status": "killed", "end_time": 123}
+            }),
+        );
+
+        match sys.classify() {
+            SystemMessageKind::TaskUpdated(t) => {
+                assert_eq!(t.status, Some("killed".to_string()));
+                assert_eq!(t.patch["end_time"], 123);
+            }
+            other => panic!("Expected TaskUpdated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_system_message_classify_hook_event_fallback_chain() {
+        // hook_event takes priority over hook_name/hook_event_name.
+        let sys = system_message(
+            "hook_started",
+            json!({"hook_event": "PreToolUse", "hook_name": "ignored"}),
+        );
+        match sys.classify() {
+            SystemMessageKind::HookEvent(h) => assert_eq!(h.hook_event_name, "PreToolUse"),
+            other => panic!("Expected HookEvent, got {:?}", other),
+        }
+
+        // Falls back to hook_name when hook_event is absent.
+        let sys2 = system_message("hook_response", json!({"hook_name": "PostToolUse"}));
+        match sys2.classify() {
+            SystemMessageKind::HookEvent(h) => assert_eq!(h.hook_event_name, "PostToolUse"),
+            other => panic!("Expected HookEvent, got {:?}", other),
+        }
+
+        // Falls back to hook_event_name as the last resort.
+        let sys3 = system_message(
+            "hook_response",
+            json!({"hook_event_name": "SessionStart"}),
+        );
+        match sys3.classify() {
+            SystemMessageKind::HookEvent(h) => assert_eq!(h.hook_event_name, "SessionStart"),
+            other => panic!("Expected HookEvent, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_system_message_classify_mirror_error() {
+        let sys = system_message("mirror_error", json!({"error": "disk full"}));
+        match sys.classify() {
+            SystemMessageKind::MirrorError(m) => assert_eq!(m.error, "disk full"),
+            other => panic!("Expected MirrorError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_system_message_classify_generic_for_plain_subtype() {
+        let sys = system_message("init", json!({"cwd": "/tmp"}));
+        assert!(matches!(sys.classify(), SystemMessageKind::Generic));
+    }
+
+    #[test]
+    fn test_result_message_new_fields_deserialization() {
+        let json_str = r#"{
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 100,
+            "duration_api_ms": 80,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "s1",
+            "stop_reason": "end_turn",
+            "uuid": "u1",
+            "terminal_reason": "completed",
+            "errors": ["warn: something"],
+            "api_error_status": 429,
+            "modelUsage": {
+                "claude-opus-4-7": {
+                    "inputTokens": 10,
+                    "outputTokens": 20,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "webSearchRequests": 0,
+                    "costUSD": 0.05,
+                    "contextWindow": 200000,
+                    "maxOutputTokens": 8192
+                }
+            },
+            "deferred_tool_use": {"id": "tu1", "name": "Bash", "input": {}}
+        }"#;
+
+        let msg: Message = serde_json::from_str(json_str).unwrap();
+        match msg {
+            Message::Result(r) => {
+                assert_eq!(r.stop_reason, Some("end_turn".to_string()));
+                assert_eq!(r.api_error_status, Some(429));
+                let usage = r.model_usage.unwrap();
+                assert_eq!(usage["claude-opus-4-7"].cost_usd, 0.05);
+                assert_eq!(r.deferred_tool_use.unwrap().name, "Bash");
+            }
+            _ => panic!("Expected Result variant"),
+        }
     }
 }

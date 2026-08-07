@@ -39,7 +39,14 @@ impl InternalClient {
                 while let Some(result) = stream.next().await {
                     let json = result?;
                     let message = parse_with_mode(&json, ParsingMode::ZeroCopy)?;
-                    messages.push(message);
+                    // Unrecognized message types (e.g. the CLI's rate_limit_event
+                    // before this SDK understood it, or any future type) parse
+                    // successfully into Message::Unknown rather than failing the
+                    // whole query; skip them here, mirroring the Python SDK
+                    // filtering `None` out of its message stream.
+                    if !matches!(message, Message::Unknown) {
+                        messages.push(message);
+                    }
                 }
             }
             ParsingMode::Traditional => {
@@ -48,7 +55,9 @@ impl InternalClient {
                 while let Some(result) = stream.next().await {
                     let json = result?;
                     let message = MessageParser::parse(json)?;
-                    messages.push(message);
+                    if !matches!(message, Message::Unknown) {
+                        messages.push(message);
+                    }
                 }
             }
         }

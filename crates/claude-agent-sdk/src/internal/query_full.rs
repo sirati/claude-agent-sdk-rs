@@ -447,6 +447,8 @@ impl QueryFull {
             crate::types::config::PermissionMode::AcceptEdits => "acceptEdits",
             crate::types::config::PermissionMode::Plan => "plan",
             crate::types::config::PermissionMode::BypassPermissions => "bypassPermissions",
+            crate::types::config::PermissionMode::DontAsk => "dontAsk",
+            crate::types::config::PermissionMode::Auto => "auto",
         };
 
         let request = json!({
@@ -487,6 +489,89 @@ impl QueryFull {
 
         self.send_control_request(request).await?;
         Ok(())
+    }
+
+    /// Reconnect a disconnected or failed MCP server.
+    ///
+    /// # Arguments
+    /// * `server_name` - The name of the MCP server to reconnect
+    pub async fn reconnect_mcp_server(&self, server_name: &str) -> Result<()> {
+        let request = json!({
+            "subtype": "mcp_reconnect",
+            "serverName": server_name
+        });
+
+        self.send_control_request(request).await?;
+        Ok(())
+    }
+
+    /// Enable or disable an MCP server.
+    ///
+    /// Disabling a server disconnects it and removes its tools from the
+    /// available tool set. Enabling a server reconnects it and makes its
+    /// tools available again.
+    ///
+    /// # Arguments
+    /// * `server_name` - The name of the MCP server to toggle
+    /// * `enabled` - Whether the server should be enabled
+    pub async fn toggle_mcp_server(&self, server_name: &str, enabled: bool) -> Result<()> {
+        let request = json!({
+            "subtype": "mcp_toggle",
+            "serverName": server_name,
+            "enabled": enabled
+        });
+
+        self.send_control_request(request).await?;
+        Ok(())
+    }
+
+    /// Stop a running task.
+    ///
+    /// After this resolves, a `task_notification` system message with status
+    /// `stopped` will be emitted by the CLI in the message stream.
+    ///
+    /// # Arguments
+    /// * `task_id` - The task ID from `task_notification` events
+    pub async fn stop_task(&self, task_id: &str) -> Result<()> {
+        let request = json!({
+            "subtype": "stop_task",
+            "task_id": task_id
+        });
+
+        self.send_control_request(request).await?;
+        Ok(())
+    }
+
+    /// Get current MCP server connection status.
+    ///
+    /// Queries the Claude Code CLI for the live connection status of all
+    /// configured MCP servers.
+    pub async fn get_mcp_status(&self) -> Result<crate::types::mcp::McpStatusResponse> {
+        let request = json!({
+            "subtype": "mcp_status"
+        });
+
+        let response = self.send_control_request(request).await?;
+        serde_json::from_value(response).map_err(|e| {
+            ClaudeError::ControlProtocol(format!("Failed to parse mcp_status response: {}", e))
+        })
+    }
+
+    /// Get a breakdown of current context window usage by category.
+    ///
+    /// Returns the same data shown by the `/context` command in the CLI.
+    pub async fn get_context_usage(&self) -> Result<crate::types::mcp::ContextUsageResponse> {
+        let request = json!({
+            "subtype": "get_context_usage"
+        });
+
+        let response = self.send_control_request(request).await?;
+        serde_json::from_value(response).map_err(|e| {
+            ClaudeError::ControlProtocol(format!(
+                "Failed to parse get_context_usage response: {}",
+                e
+            ))
+        })
     }
 
     /// Get server initialization info

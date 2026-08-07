@@ -221,6 +221,200 @@ impl SdkMcpServer for DefaultSdkMcpServer {
     }
 }
 
+// --- MCP server status types (returned by `ClaudeClient::get_mcp_status`) ---
+//
+// These mirror the wire-format JSON emitted by the CLI (camelCase field
+// names) rather than the in-process `McpServerConfig`/`McpSdkServerConfig`
+// types above, which carry a non-serializable `instance` handle and have no
+// `claudeai-proxy` variant.
+
+/// SDK MCP server config as returned in status responses.
+///
+/// Unlike [`McpSdkServerConfig`], which holds the in-process `instance`,
+/// this output-only type only carries serializable fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSdkServerConfigStatus {
+    /// Server name
+    pub name: String,
+}
+
+/// Claude.ai proxy MCP server config.
+///
+/// Output-only type that appears in status responses for servers proxied
+/// through Claude.ai.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpClaudeAIProxyServerConfig {
+    /// Proxy URL
+    pub url: String,
+    /// Proxy identifier
+    pub id: String,
+}
+
+/// Server configuration as reported in status responses.
+///
+/// Broader than [`McpServerConfig`]: it includes the output-only
+/// `claudeai-proxy` and `sdk` (status) variants and is tagged by the wire
+/// `type` field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum McpServerStatusConfig {
+    /// Stdio-based MCP server
+    #[serde(rename = "stdio")]
+    Stdio(McpStdioServerConfig),
+    /// SSE-based MCP server
+    #[serde(rename = "sse")]
+    Sse(McpSseServerConfig),
+    /// HTTP-based MCP server
+    #[serde(rename = "http")]
+    Http(McpHttpServerConfig),
+    /// SDK (in-process) MCP server
+    #[serde(rename = "sdk")]
+    Sdk(McpSdkServerConfigStatus),
+    /// Claude.ai proxy MCP server
+    #[serde(rename = "claudeai-proxy")]
+    ClaudeAiProxy(McpClaudeAIProxyServerConfig),
+}
+
+/// Tool annotations as returned in MCP server status.
+///
+/// Wire format uses camelCase field names (from CLI JSON output).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpToolAnnotations {
+    /// Whether the tool only reads data
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "readOnly")]
+    pub read_only: Option<bool>,
+    /// Whether the tool may perform destructive updates
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "destructive")]
+    pub destructive: Option<bool>,
+    /// Whether the tool interacts with an open-ended external world
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "openWorld")]
+    pub open_world: Option<bool>,
+}
+
+/// Information about a tool provided by an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolInfo {
+    /// Tool name
+    pub name: String,
+    /// Tool description
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Tool annotations
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<McpToolAnnotations>,
+}
+
+/// Server info from the MCP initialize handshake (available when connected).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerInfo {
+    /// Server name
+    pub name: String,
+    /// Server version
+    pub version: String,
+}
+
+/// Connection status values for an MCP server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpServerConnectionStatus {
+    /// Connected and ready
+    Connected,
+    /// Connection failed
+    Failed,
+    /// Requires authentication before connecting
+    NeedsAuth,
+    /// Connection is in progress
+    Pending,
+    /// Server has been disabled
+    Disabled,
+}
+
+/// Status information for an MCP server connection.
+///
+/// Returned by [`crate::ClaudeClient::get_mcp_status`] in the `mcpServers`
+/// list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerStatus {
+    /// Server name as configured
+    pub name: String,
+    /// Current connection status
+    pub status: McpServerConnectionStatus,
+    /// Server information from the MCP handshake (available when connected)
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "serverInfo")]
+    pub server_info: Option<McpServerInfo>,
+    /// Error message (available when status is `failed`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Server configuration (includes URL for HTTP/SSE servers)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<McpServerStatusConfig>,
+    /// Configuration scope (e.g. project, user, local, claudeai, managed)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Tools provided by this server (available when connected)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<McpToolInfo>>,
+}
+
+/// Response from [`crate::ClaudeClient::get_mcp_status`].
+///
+/// Wraps the list of server statuses under the `mcpServers` key, matching
+/// the wire-format response shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStatusResponse {
+    /// Status of every configured MCP server
+    #[serde(rename = "mcpServers")]
+    pub mcp_servers: Vec<McpServerStatus>,
+}
+
+/// A single context usage category (system prompt, tools, messages, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUsageCategory {
+    /// Category name
+    pub name: String,
+    /// Tokens used by this category
+    pub tokens: u64,
+    /// Display color for this category
+    pub color: String,
+    /// Whether this category's loading is deferred
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "isDeferred")]
+    pub is_deferred: Option<bool>,
+}
+
+/// Response from [`crate::ClaudeClient::get_context_usage`].
+///
+/// Provides a breakdown of current context window usage by category,
+/// matching the data shown by the `/context` command in the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUsageResponse {
+    /// Token usage broken down by category (system prompt, tools, messages, etc.)
+    pub categories: Vec<ContextUsageCategory>,
+    /// Total tokens currently in the context window
+    #[serde(rename = "totalTokens")]
+    pub total_tokens: u64,
+    /// Effective maximum tokens (may be reduced by autocompact buffer)
+    #[serde(rename = "maxTokens")]
+    pub max_tokens: u64,
+    /// Raw model context window size
+    #[serde(rename = "rawMaxTokens")]
+    pub raw_max_tokens: u64,
+    /// Percentage of context window used (0-100)
+    pub percentage: f64,
+    /// Model name the context usage is calculated for
+    pub model: String,
+    /// Whether autocompact is enabled for this session
+    #[serde(rename = "isAutoCompactEnabled")]
+    pub is_auto_compact_enabled: bool,
+    /// CLAUDE.md and memory files loaded, with path, type, and token counts
+    #[serde(rename = "memoryFiles")]
+    pub memory_files: Vec<serde_json::Value>,
+    /// MCP tools with name, serverName, tokens, and isLoaded status
+    #[serde(rename = "mcpTools")]
+    pub mcp_tools: Vec<serde_json::Value>,
+    /// Agent definitions with agentType, source, and token counts
+    pub agents: Vec<serde_json::Value>,
+}
+
 /// Macro to create a tool
 #[macro_export]
 macro_rules! tool {

@@ -136,6 +136,17 @@ impl ClaudeClient {
             return Ok(());
         }
 
+        // Advisory only, mirrors Python's `_warn_if_can_use_tool_shadowed`: only
+        // relevant when a `can_use_tool` callback is actually configured.
+        if self.options.can_use_tool.is_some() {
+            if let Some(msg) = crate::types::permissions::can_use_tool_shadowed_warning(
+                self.options.permission_mode,
+                &self.options.allowed_tools,
+            ) {
+                tracing::warn!("{msg}");
+            }
+        }
+
         // Check if connection pooling is enabled
         let use_pool = self.options.pool_config.as_ref().is_some_and(|c| c.enabled);
 
@@ -210,6 +221,10 @@ impl ClaudeClient {
                         HookEvent::Stop => "Stop",
                         HookEvent::SubagentStop => "SubagentStop",
                         HookEvent::PreCompact => "PreCompact",
+                        HookEvent::PostToolUseFailure => "PostToolUseFailure",
+                        HookEvent::Notification => "Notification",
+                        HookEvent::SubagentStart => "SubagentStart",
+                        HookEvent::PermissionRequest => "PermissionRequest",
                     };
                     (event_name.to_string(), matchers.clone())
                 })
@@ -275,6 +290,10 @@ impl ClaudeClient {
                         HookEvent::Stop => "Stop",
                         HookEvent::SubagentStop => "SubagentStop",
                         HookEvent::PreCompact => "PreCompact",
+                        HookEvent::PostToolUseFailure => "PostToolUseFailure",
+                        HookEvent::Notification => "Notification",
+                        HookEvent::SubagentStart => "SubagentStart",
+                        HookEvent::PermissionRequest => "PermissionRequest",
                     };
                     (event_name.to_string(), matchers.clone())
                 })
@@ -594,6 +613,12 @@ impl ClaudeClient {
                 match message {
                     Some(json) => {
                         match MessageParser::parse(json) {
+                            // Unrecognized message types (e.g. a CLI version emitting
+                            // a message type newer than this SDK knows about) are
+                            // forward-compatible no-ops: skip silently rather than
+                            // surfacing a placeholder to callers, mirroring the
+                            // Python SDK filtering `None` out of its message stream.
+                            Ok(Message::Unknown) => continue,
                             Ok(msg) => yield Ok(msg),
                             Err(e) => {
                                 eprintln!("Failed to parse message: {}", e);
@@ -670,6 +695,9 @@ impl ClaudeClient {
                 match message {
                     Some(json) => {
                         match MessageParser::parse(json) {
+                            // See receive_messages(): unrecognized message types are
+                            // forward-compatible no-ops, skipped rather than yielded.
+                            Ok(Message::Unknown) => continue,
                             Ok(msg) => {
                                 let is_result = matches!(msg, Message::Result(_));
                                 yield Ok(msg);
@@ -806,6 +834,122 @@ impl ClaudeClient {
 
         let query_guard = query.lock().await;
         query_guard.rewind_files(user_message_id).await
+    }
+
+    /// Reconnect a disconnected or failed MCP server (only works with streaming mode)
+    ///
+    /// Use this to retry connecting to an MCP server that failed to connect
+    /// or was disconnected. Returns an error if the reconnection fails.
+    ///
+    /// # Arguments
+    ///
+    /// * `server_name` - The name of the MCP server to reconnect
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client is not connected or if the reconnect fails.
+    pub async fn reconnect_mcp_server(&self, server_name: &str) -> Result<()> {
+        let query = self.query.as_ref().ok_or_else(|| {
+            ClaudeError::InvalidConfig("Client not connected. Call connect() first.".to_string())
+        })?;
+
+        let query_guard = query.lock().await;
+        query_guard.reconnect_mcp_server(server_name).await
+    }
+
+    /// Enable or disable an MCP server (only works with streaming mode)
+    ///
+    /// Disabling a server disconnects it and removes its tools from the
+    /// available tool set. Enabling a server reconnects it and makes its
+    /// tools available again.
+    ///
+    /// # Arguments
+    ///
+    /// * `server_name` - The name of the MCP server to toggle
+    /// * `enabled` - `true` to enable the server, `false` to disable it
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client is not connected or if the toggle fails.
+    pub async fn toggle_mcp_server(&self, server_name: &str, enabled: bool) -> Result<()> {
+        let query = self.query.as_ref().ok_or_else(|| {
+            ClaudeError::InvalidConfig("Client not connected. Call connect() first.".to_string())
+        })?;
+
+        let query_guard = query.lock().await;
+        query_guard.toggle_mcp_server(server_name, enabled).await
+    }
+
+    /// Stop a running task (only works with streaming mode)
+    ///
+    /// After this resolves, a `task_notification` system message with status
+    /// `stopped` will be emitted by the CLI in the message stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The task ID from `task_notification` events
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client is not connected or if sending fails.
+    pub async fn stop_task(&self, task_id: &str) -> Result<()> {
+        let query = self.query.as_ref().ok_or_else(|| {
+            ClaudeError::InvalidConfig("Client not connected. Call connect() first.".to_string())
+        })?;
+
+        let query_guard = query.lock().await;
+        query_guard.stop_task(task_id).await
+    }
+
+    /// Get current MCP server connection status (only works with streaming mode)
+    ///
+    /// Queries the Claude Code CLI for the live connection status of all
+    /// configured MCP servers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client is not connected or if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut client = ClaudeClient::new(ClaudeAgentOptions::default());
+    /// # client.connect().await?;
+    /// let status = client.get_mcp_status().await?;
+    /// for server in &status.mcp_servers {
+    ///     println!("{}: {:?}", server.name, server.status);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_mcp_status(&self) -> Result<crate::types::mcp::McpStatusResponse> {
+        let query = self.query.as_ref().ok_or_else(|| {
+            ClaudeError::InvalidConfig("Client not connected. Call connect() first.".to_string())
+        })?;
+
+        let query_guard = query.lock().await;
+        query_guard.get_mcp_status().await
+    }
+
+    /// Get a breakdown of current context window usage by category
+    ///
+    /// Returns the same data shown by the `/context` command in the CLI,
+    /// including token counts per category, total usage, and detailed
+    /// breakdowns of MCP tools, memory files, and agents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client is not connected or if the request fails.
+    pub async fn get_context_usage(&self) -> Result<crate::types::mcp::ContextUsageResponse> {
+        let query = self.query.as_ref().ok_or_else(|| {
+            ClaudeError::InvalidConfig("Client not connected. Call connect() first.".to_string())
+        })?;
+
+        let query_guard = query.lock().await;
+        query_guard.get_context_usage().await
     }
 
     /// Get server initialization info including available commands and output styles

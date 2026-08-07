@@ -281,7 +281,10 @@ pub use types::{
     config::*,
     hooks::*,
     mcp::{
-        McpServerConfig, McpServers, SdkMcpServer, SdkMcpTool, ToolHandler, ToolResult,
+        ContextUsageCategory, ContextUsageResponse, McpClaudeAIProxyServerConfig,
+        McpServerConfig, McpServerConnectionStatus, McpServerInfo, McpServerStatus,
+        McpServerStatusConfig, McpServers, McpSdkServerConfigStatus, McpStatusResponse,
+        McpToolAnnotations, McpToolInfo, SdkMcpServer, SdkMcpTool, ToolHandler, ToolResult,
         ToolResultContent as McpToolResultContent, create_sdk_mcp_server,
     },
     messages::*,

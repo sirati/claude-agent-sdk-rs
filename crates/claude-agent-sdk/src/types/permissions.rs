@@ -18,6 +18,28 @@ pub struct ToolPermissionContext {
     pub signal: Option<()>,
     /// Permission suggestions from Claude
     pub suggestions: Vec<PermissionUpdate>,
+    /// Unique identifier for this specific tool call within the assistant
+    /// message. Always present when delivered to a `can_use_tool` callback.
+    pub tool_use_id: Option<String>,
+    /// If running within the context of a sub-agent, the sub-agent's ID
+    pub agent_id: Option<String>,
+    /// The file path that triggered the permission request, if applicable
+    /// (e.g. when a Bash command tries to access a path outside allowed
+    /// directories)
+    pub blocked_path: Option<String>,
+    /// Explains why this permission request was triggered. When a
+    /// PreToolUse hook returns `permissionDecision: "ask"` with a
+    /// `permissionDecisionReason`, that reason is forwarded here.
+    pub decision_reason: Option<String>,
+    /// Full permission prompt sentence (e.g. "Claude wants to read
+    /// foo.txt"). Use this as the primary prompt text when present instead
+    /// of reconstructing from tool name + input.
+    pub title: Option<String>,
+    /// Short noun phrase for the tool action (e.g. "Read file"), suitable
+    /// for button labels or compact UI.
+    pub display_name: Option<String>,
+    /// Human-readable subtitle for the permission UI
+    pub description: Option<String>,
 }
 
 /// Result of a permission check
@@ -136,6 +158,84 @@ pub enum PermissionUpdateDestination {
     /// Current session only
     #[serde(rename = "session")]
     Session,
+}
+
+/// Returns the tool that an `allowed_tools` entry allows outright, if any.
+///
+/// Mirrors the CLI's rule parser: an entry allows a whole tool when it has
+/// no `(...)` specifier (`"Read"`), or when the specifier is empty or a
+/// lone wildcard (`"Read()"`, `"Read(*)"`). A real specifier
+/// (`"Bash(ls:*)"`) only allows matching invocations. Malformed entries
+/// (unbalanced parens) match nothing.
+fn whole_tool_allowed(entry: &str) -> Option<&str> {
+    if entry.trim().is_empty() {
+        return None;
+    }
+    match entry.find('(') {
+        None => Some(entry),
+        Some(0) => None,
+        Some(open) if entry.ends_with(')') => {
+            let inner = &entry[open + 1..entry.len() - 1];
+            if inner.is_empty() || inner == "*" {
+                Some(&entry[..open])
+            } else {
+                None
+            }
+        }
+        Some(_) => None,
+    }
+}
+
+/// Computes the `can_use_tool` shadowing advisory for the given options, if
+/// any tool call would bypass the callback entirely.
+///
+/// `can_use_tool` is never invoked for a tool call that `permission_mode` or
+/// `allowed_tools` already auto-approve before the callback would run. This
+/// mirrors the Python/TypeScript SDKs' `CanUseToolShadowedWarning`; unlike
+/// those SDKs (which use a warnings/process-warning mechanism), Rust callers
+/// should log the returned message (e.g. via `tracing::warn!`) at the point
+/// where `ClaudeAgentOptions` is validated or consumed, once `can_use_tool`
+/// is known to be set. See the crate's config/client code for that call
+/// site — this function only computes the message.
+pub fn can_use_tool_shadowed_warning(
+    permission_mode: Option<super::config::PermissionMode>,
+    allowed_tools: &[String],
+) -> Option<String> {
+    if matches!(
+        permission_mode,
+        Some(super::config::PermissionMode::BypassPermissions)
+    ) {
+        return Some(
+            "can_use_tool will not be invoked: permission_mode \
+             'bypassPermissions' auto-approves every tool call (except \
+             explicit deny rules) before the callback is consulted. To \
+             gate every tool call, use a PreToolUse hook instead."
+                .to_string(),
+        );
+    }
+
+    let mut shadowed: Vec<&str> = Vec::new();
+    for entry in allowed_tools {
+        if let Some(tool) = whole_tool_allowed(entry) {
+            if !shadowed.contains(&tool) {
+                shadowed.push(tool);
+            }
+        }
+    }
+
+    if shadowed.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "can_use_tool will not be invoked for: {}. An allowed_tools entry \
+         that allows a whole tool auto-approves it before the callback is \
+         consulted. To gate every tool call, use a PreToolUse hook; or \
+         narrow the entry so calls fall through to can_use_tool. Allow \
+         rules from settings files can also shadow the callback but are \
+         not visible here.",
+        shadowed.join(", ")
+    ))
 }
 
 #[cfg(test)]
@@ -258,5 +358,41 @@ mod tests {
         assert!(json.get("rules").is_none());
         assert!(json.get("behavior").is_none());
         assert!(json.get("destination").is_none());
+    }
+
+    #[test]
+    fn test_shadow_warning_bypass_permissions() {
+        let message = can_use_tool_shadowed_warning(
+            Some(super::super::config::PermissionMode::BypassPermissions),
+            &[],
+        );
+        assert!(message.unwrap().contains("bypassPermissions"));
+    }
+
+    #[test]
+    fn test_shadow_warning_whole_tool_allowed() {
+        let message = can_use_tool_shadowed_warning(None, &["Read".to_string()]);
+        assert!(message.unwrap().contains("Read"));
+    }
+
+    #[test]
+    fn test_shadow_warning_wildcard_specifier_shadows() {
+        let message = can_use_tool_shadowed_warning(None, &["Read(*)".to_string()]);
+        assert!(message.unwrap().contains("Read"));
+    }
+
+    #[test]
+    fn test_shadow_warning_narrow_specifier_does_not_shadow() {
+        let message = can_use_tool_shadowed_warning(None, &["Bash(ls:*)".to_string()]);
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn test_shadow_warning_none_when_default_and_no_allowed_tools() {
+        let message = can_use_tool_shadowed_warning(
+            Some(super::super::config::PermissionMode::Default),
+            &[],
+        );
+        assert!(message.is_none());
     }
 }

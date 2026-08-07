@@ -13,6 +13,8 @@ pub enum HookEvent {
     PreToolUse,
     /// After tool use
     PostToolUse,
+    /// After tool use fails
+    PostToolUseFailure,
     /// When user prompt is submitted
     UserPromptSubmit,
     /// When execution stops
@@ -21,6 +23,12 @@ pub enum HookEvent {
     SubagentStop,
     /// Before compacting conversation
     PreCompact,
+    /// A notification is shown to the user
+    Notification,
+    /// When a subagent starts
+    SubagentStart,
+    /// Before a permission request is shown
+    PermissionRequest,
 }
 
 /// Hook matcher for pattern-based hook registration
@@ -56,6 +64,8 @@ pub enum HookInput {
     PreToolUse(PreToolUseHookInput),
     /// Post-tool-use hook input
     PostToolUse(PostToolUseHookInput),
+    /// Post-tool-use-failure hook input
+    PostToolUseFailure(PostToolUseFailureHookInput),
     /// User-prompt-submit hook input
     UserPromptSubmit(UserPromptSubmitHookInput),
     /// Stop hook input
@@ -64,6 +74,12 @@ pub enum HookInput {
     SubagentStop(SubagentStopHookInput),
     /// Pre-compact hook input
     PreCompact(PreCompactHookInput),
+    /// Notification hook input
+    Notification(NotificationHookInput),
+    /// Subagent-start hook input
+    SubagentStart(SubagentStartHookInput),
+    /// Permission-request hook input
+    PermissionRequest(PermissionRequestHookInput),
 }
 
 /// Pre-tool-use hook input
@@ -82,6 +98,15 @@ pub struct PreToolUseHookInput {
     pub tool_name: String,
     /// Tool input parameters
     pub tool_input: serde_json::Value,
+    /// Unique identifier for this tool call
+    pub tool_use_id: String,
+    /// Sub-agent identifier, present only when the hook fires from inside a
+    /// Task-spawned sub-agent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Agent type name (e.g. "general-purpose", "code-reviewer")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 /// Post-tool-use hook input
@@ -102,6 +127,47 @@ pub struct PostToolUseHookInput {
     pub tool_input: serde_json::Value,
     /// Tool response (output from the tool)
     pub tool_response: serde_json::Value,
+    /// Unique identifier for this tool call
+    pub tool_use_id: String,
+    /// Sub-agent identifier, present only when the hook fires from inside a
+    /// Task-spawned sub-agent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Agent type name (e.g. "general-purpose", "code-reviewer")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+}
+
+/// Post-tool-use-failure hook input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostToolUseFailureHookInput {
+    /// Session ID
+    pub session_id: String,
+    /// Transcript path
+    pub transcript_path: String,
+    /// Current working directory
+    pub cwd: String,
+    /// Permission mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// Tool name that failed
+    pub tool_name: String,
+    /// Tool input parameters
+    pub tool_input: serde_json::Value,
+    /// Unique identifier for this tool call
+    pub tool_use_id: String,
+    /// Error message describing the failure
+    pub error: String,
+    /// Whether the failure was caused by an interrupt
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_interrupt: Option<bool>,
+    /// Sub-agent identifier, present only when the hook fires from inside a
+    /// Task-spawned sub-agent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Agent type name (e.g. "general-purpose", "code-reviewer")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 /// User-prompt-submit hook input
@@ -150,6 +216,12 @@ pub struct SubagentStopHookInput {
     pub permission_mode: Option<String>,
     /// Whether stop hook is active
     pub stop_hook_active: bool,
+    /// Sub-agent identifier
+    pub agent_id: String,
+    /// Transcript path for the sub-agent
+    pub agent_transcript_path: String,
+    /// Agent type name (e.g. "general-purpose", "code-reviewer")
+    pub agent_type: String,
 }
 
 /// Pre-compact hook input
@@ -169,6 +241,73 @@ pub struct PreCompactHookInput {
     /// Custom instructions for compaction
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_instructions: Option<String>,
+}
+
+/// Notification hook input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationHookInput {
+    /// Session ID
+    pub session_id: String,
+    /// Transcript path
+    pub transcript_path: String,
+    /// Current working directory
+    pub cwd: String,
+    /// Permission mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// Notification message
+    pub message: String,
+    /// Notification title
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Notification type
+    pub notification_type: String,
+}
+
+/// Subagent-start hook input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentStartHookInput {
+    /// Session ID
+    pub session_id: String,
+    /// Transcript path
+    pub transcript_path: String,
+    /// Current working directory
+    pub cwd: String,
+    /// Permission mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// Sub-agent identifier
+    pub agent_id: String,
+    /// Agent type name (e.g. "general-purpose", "code-reviewer")
+    pub agent_type: String,
+}
+
+/// Permission-request hook input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRequestHookInput {
+    /// Session ID
+    pub session_id: String,
+    /// Transcript path
+    pub transcript_path: String,
+    /// Current working directory
+    pub cwd: String,
+    /// Permission mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// Tool name the permission request is for
+    pub tool_name: String,
+    /// Tool input parameters
+    pub tool_input: serde_json::Value,
+    /// Permission suggestions provided by the CLI
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_suggestions: Option<Vec<serde_json::Value>>,
+    /// Sub-agent identifier, present only when the hook fires from inside a
+    /// Task-spawned sub-agent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Agent type name (e.g. "general-purpose", "code-reviewer")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 /// Hook context passed to callbacks
@@ -258,8 +397,16 @@ pub enum HookSpecificOutput {
     PreToolUse(PreToolUseHookSpecificOutput),
     /// Post-tool-use specific output
     PostToolUse(PostToolUseHookSpecificOutput),
+    /// Post-tool-use-failure specific output
+    PostToolUseFailure(PostToolUseFailureHookSpecificOutput),
     /// User-prompt-submit specific output
     UserPromptSubmit(UserPromptSubmitHookSpecificOutput),
+    /// Notification specific output
+    Notification(NotificationHookSpecificOutput),
+    /// Subagent-start specific output
+    SubagentStart(SubagentStartHookSpecificOutput),
+    /// Permission-request specific output
+    PermissionRequest(PermissionRequestHookSpecificOutput),
 }
 
 /// Pre-tool-use hook specific output
@@ -281,6 +428,10 @@ pub struct PreToolUseHookSpecificOutput {
     #[serde(skip_serializing_if = "Option::is_none", rename = "updatedInput")]
     #[builder(default, setter(strip_option))]
     pub updated_input: Option<serde_json::Value>,
+    /// Additional context to provide to Claude
+    #[serde(skip_serializing_if = "Option::is_none", rename = "additionalContext")]
+    #[builder(default, setter(into, strip_option))]
+    pub additional_context: Option<String>,
 }
 
 impl Default for PreToolUseHookSpecificOutput {
@@ -297,9 +448,39 @@ pub struct PostToolUseHookSpecificOutput {
     #[serde(skip_serializing_if = "Option::is_none", rename = "additionalContext")]
     #[builder(default, setter(into, strip_option))]
     pub additional_context: Option<String>,
+    /// Replaces the tool output before it is sent to the model. For built-in
+    /// tools the value must match the tool's output schema; a mismatched
+    /// shape is rejected and the original output is kept.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "updatedToolOutput")]
+    #[builder(default, setter(strip_option))]
+    pub updated_tool_output: Option<serde_json::Value>,
+    /// Replaces the output for MCP tools only. Prefer `updated_tool_output`,
+    /// which works for all tools.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "updatedMCPToolOutput"
+    )]
+    #[builder(default, setter(strip_option))]
+    pub updated_mcp_tool_output: Option<serde_json::Value>,
 }
 
 impl Default for PostToolUseHookSpecificOutput {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+/// Post-tool-use-failure hook specific output
+#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
+#[builder(doc)]
+pub struct PostToolUseFailureHookSpecificOutput {
+    /// Additional context to provide to Claude
+    #[serde(skip_serializing_if = "Option::is_none", rename = "additionalContext")]
+    #[builder(default, setter(into, strip_option))]
+    pub additional_context: Option<String>,
+}
+
+impl Default for PostToolUseFailureHookSpecificOutput {
     fn default() -> Self {
         Self::builder().build()
     }
@@ -319,6 +500,47 @@ impl Default for UserPromptSubmitHookSpecificOutput {
     fn default() -> Self {
         Self::builder().build()
     }
+}
+
+/// Notification hook specific output
+#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
+#[builder(doc)]
+pub struct NotificationHookSpecificOutput {
+    /// Additional context to provide to Claude
+    #[serde(skip_serializing_if = "Option::is_none", rename = "additionalContext")]
+    #[builder(default, setter(into, strip_option))]
+    pub additional_context: Option<String>,
+}
+
+impl Default for NotificationHookSpecificOutput {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+/// Subagent-start hook specific output
+#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
+#[builder(doc)]
+pub struct SubagentStartHookSpecificOutput {
+    /// Additional context to provide to Claude
+    #[serde(skip_serializing_if = "Option::is_none", rename = "additionalContext")]
+    #[builder(default, setter(into, strip_option))]
+    pub additional_context: Option<String>,
+}
+
+impl Default for SubagentStartHookSpecificOutput {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+/// Permission-request hook specific output
+#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
+#[builder(doc)]
+pub struct PermissionRequestHookSpecificOutput {
+    /// Permission decision payload
+    #[builder(setter(into))]
+    pub decision: serde_json::Value,
 }
 
 #[cfg(test)]
@@ -350,6 +572,22 @@ mod tests {
             serde_json::to_string(&HookEvent::PreCompact).unwrap(),
             "\"PreCompact\""
         );
+        assert_eq!(
+            serde_json::to_string(&HookEvent::PostToolUseFailure).unwrap(),
+            "\"PostToolUseFailure\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HookEvent::Notification).unwrap(),
+            "\"Notification\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HookEvent::SubagentStart).unwrap(),
+            "\"SubagentStart\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HookEvent::PermissionRequest).unwrap(),
+            "\"PermissionRequest\""
+        );
     }
 
     #[test]
@@ -361,7 +599,8 @@ mod tests {
             "cwd": "/working/dir",
             "permission_mode": "default",
             "tool_name": "Bash",
-            "tool_input": {"command": "echo hello"}
+            "tool_input": {"command": "echo hello"},
+            "tool_use_id": "toolu_123"
         }"#;
 
         let input: HookInput = serde_json::from_str(json_str).unwrap();
@@ -370,6 +609,8 @@ mod tests {
                 assert_eq!(pre_tool.session_id, "test-session");
                 assert_eq!(pre_tool.tool_name, "Bash");
                 assert_eq!(pre_tool.tool_input["command"], "echo hello");
+                assert_eq!(pre_tool.tool_use_id, "toolu_123");
+                assert_eq!(pre_tool.agent_id, None);
             },
             _ => panic!("Expected PreToolUse variant"),
         }
@@ -384,7 +625,8 @@ mod tests {
             "cwd": "/working/dir",
             "tool_name": "Bash",
             "tool_input": {"command": "echo hello"},
-            "tool_response": "hello\n"
+            "tool_response": "hello\n",
+            "tool_use_id": "toolu_123"
         }"#;
 
         let input: HookInput = serde_json::from_str(json_str).unwrap();
@@ -393,8 +635,97 @@ mod tests {
                 assert_eq!(post_tool.session_id, "test-session");
                 assert_eq!(post_tool.tool_name, "Bash");
                 assert_eq!(post_tool.tool_response, "hello\n");
+                assert_eq!(post_tool.tool_use_id, "toolu_123");
             },
             _ => panic!("Expected PostToolUse variant"),
+        }
+    }
+
+    #[test]
+    fn test_posttoolusefailure_hook_input_deserialization() {
+        let json_str = r#"{
+            "hook_event_name": "PostToolUseFailure",
+            "session_id": "test-session",
+            "transcript_path": "/path/to/transcript",
+            "cwd": "/working/dir",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_use_id": "toolu_123",
+            "error": "command failed",
+            "agent_id": "agent_1"
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json_str).unwrap();
+        match input {
+            HookInput::PostToolUseFailure(failure) => {
+                assert_eq!(failure.tool_name, "Bash");
+                assert_eq!(failure.error, "command failed");
+                assert_eq!(failure.agent_id, Some("agent_1".to_string()));
+            },
+            _ => panic!("Expected PostToolUseFailure variant"),
+        }
+    }
+
+    #[test]
+    fn test_notification_hook_input_deserialization() {
+        let json_str = r#"{
+            "hook_event_name": "Notification",
+            "session_id": "test-session",
+            "transcript_path": "/path/to/transcript",
+            "cwd": "/working/dir",
+            "message": "Waiting for input",
+            "notification_type": "idle"
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json_str).unwrap();
+        match input {
+            HookInput::Notification(notification) => {
+                assert_eq!(notification.message, "Waiting for input");
+                assert_eq!(notification.notification_type, "idle");
+            },
+            _ => panic!("Expected Notification variant"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_start_hook_input_deserialization() {
+        let json_str = r#"{
+            "hook_event_name": "SubagentStart",
+            "session_id": "test-session",
+            "transcript_path": "/path/to/transcript",
+            "cwd": "/working/dir",
+            "agent_id": "agent_1",
+            "agent_type": "general-purpose"
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json_str).unwrap();
+        match input {
+            HookInput::SubagentStart(start) => {
+                assert_eq!(start.agent_id, "agent_1");
+                assert_eq!(start.agent_type, "general-purpose");
+            },
+            _ => panic!("Expected SubagentStart variant"),
+        }
+    }
+
+    #[test]
+    fn test_permission_request_hook_input_deserialization() {
+        let json_str = r#"{
+            "hook_event_name": "PermissionRequest",
+            "session_id": "test-session",
+            "transcript_path": "/path/to/transcript",
+            "cwd": "/working/dir",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hello"}
+        }"#;
+
+        let input: HookInput = serde_json::from_str(json_str).unwrap();
+        match input {
+            HookInput::PermissionRequest(request) => {
+                assert_eq!(request.tool_name, "Bash");
+                assert_eq!(request.permission_suggestions, None);
+            },
+            _ => panic!("Expected PermissionRequest variant"),
         }
     }
 
@@ -425,7 +756,10 @@ mod tests {
             "session_id": "test-session",
             "transcript_path": "/path/to/transcript",
             "cwd": "/working/dir",
-            "stop_hook_active": false
+            "stop_hook_active": false,
+            "agent_id": "agent_1",
+            "agent_transcript_path": "/path/to/agent/transcript",
+            "agent_type": "general-purpose"
         }"#;
 
         let input: HookInput = serde_json::from_str(json_str).unwrap();
@@ -433,6 +767,8 @@ mod tests {
             HookInput::SubagentStop(subagent) => {
                 assert_eq!(subagent.session_id, "test-session");
                 assert!(!subagent.stop_hook_active);
+                assert_eq!(subagent.agent_id, "agent_1");
+                assert_eq!(subagent.agent_type, "general-purpose");
             },
             _ => panic!("Expected SubagentStop variant"),
         }
@@ -482,6 +818,7 @@ mod tests {
             permission_decision: Some("deny".to_string()),
             permission_decision_reason: Some("Security policy".to_string()),
             updated_input: None,
+            additional_context: None,
         });
 
         let json = serde_json::to_value(&output).unwrap();
@@ -494,6 +831,8 @@ mod tests {
     fn test_hook_specific_output_posttooluse_serialization() {
         let output = HookSpecificOutput::PostToolUse(PostToolUseHookSpecificOutput {
             additional_context: Some("Error occurred".to_string()),
+            updated_tool_output: None,
+            updated_mcp_tool_output: None,
         });
 
         let json = serde_json::to_value(&output).unwrap();
@@ -521,6 +860,7 @@ mod tests {
                     permission_decision: Some("allow".to_string()),
                     permission_decision_reason: Some("Approved".to_string()),
                     updated_input: Some(json!({"modified": true})),
+                    additional_context: None,
                 },
             )),
             ..Default::default()
@@ -810,6 +1150,9 @@ mod tests {
             permission_mode: None,
             tool_name: "Bash".to_string(),
             tool_input: serde_json::json!({"command": "ls"}),
+            tool_use_id: "toolu_123".to_string(),
+            agent_id: None,
+            agent_type: None,
         });
 
         let result = hook_callback(input, None, HookContext::default()).await;
@@ -847,6 +1190,9 @@ mod tests {
             permission_mode: None,
             tool_name: "Bash".to_string(),
             tool_input: serde_json::json!({"command": "ls"}),
+            tool_use_id: "toolu_123".to_string(),
+            agent_id: None,
+            agent_type: None,
         });
 
         let result = hook_callback(input, None, HookContext::default()).await;
@@ -1018,12 +1364,16 @@ impl Hooks {
         with_matcher: {
             PreToolUse => add_pre_tool_use: "Add a PreToolUse hook that fires before tool execution.",
             PostToolUse => add_post_tool_use: "Add a PostToolUse hook that fires after tool execution.",
+            PostToolUseFailure => add_post_tool_use_failure: "Add a PostToolUseFailure hook that fires when tool execution fails.",
+            PermissionRequest => add_permission_request: "Add a PermissionRequest hook that fires before a permission request is shown.",
         },
         without_matcher: {
             UserPromptSubmit => add_user_prompt_submit: "Add a UserPromptSubmit hook that fires when user submits a prompt.",
             Stop => add_stop: "Add a Stop hook that fires when execution stops.",
             SubagentStop => add_subagent_stop: "Add a SubagentStop hook that fires when a subagent stops.",
             PreCompact => add_pre_compact: "Add a PreCompact hook that fires before conversation compaction.",
+            Notification => add_notification: "Add a Notification hook that fires when a notification is shown.",
+            SubagentStart => add_subagent_start: "Add a SubagentStart hook that fires when a subagent starts.",
         },
     }
 }

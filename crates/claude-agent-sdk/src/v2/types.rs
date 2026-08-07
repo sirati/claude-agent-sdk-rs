@@ -181,6 +181,8 @@ impl From<SessionOptions> for crate::types::config::ClaudeAgentOptions {
 /// * `AcceptEdits` - Accept edits automatically
 /// * `Plan` - Plan mode
 /// * `BypassPermissions` - Auto-approve all tool usage
+/// * `DontAsk` - Don't prompt for permissions; deny if not pre-approved
+/// * `Auto` - Automatically choose the permission behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionMode {
     /// Default permission mode
@@ -194,6 +196,12 @@ pub enum PermissionMode {
 
     /// Auto-approve all tool usage
     BypassPermissions,
+
+    /// Don't prompt for permissions; deny if not pre-approved
+    DontAsk,
+
+    /// Automatically choose the permission behavior
+    Auto,
 }
 
 impl From<PermissionMode> for crate::types::config::PermissionMode {
@@ -203,6 +211,8 @@ impl From<PermissionMode> for crate::types::config::PermissionMode {
             PermissionMode::AcceptEdits => Self::AcceptEdits,
             PermissionMode::Plan => Self::Plan,
             PermissionMode::BypassPermissions => Self::BypassPermissions,
+            PermissionMode::DontAsk => Self::DontAsk,
+            PermissionMode::Auto => Self::Auto,
         }
     }
 }
@@ -220,6 +230,7 @@ impl From<PermissionMode> for crate::types::config::PermissionMode {
 ///     input_tokens: 15,
 ///     output_tokens: 5,
 ///     model: Some("claude-sonnet-4-20250514".to_string()),
+///     buffer_metrics: None,
 /// };
 ///
 /// println!("Response: {}", result.content);

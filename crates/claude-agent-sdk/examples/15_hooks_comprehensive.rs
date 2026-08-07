@@ -124,6 +124,8 @@ async fn review_tool_output(
                             additional_context: Some(
                                 "The tool encountered an error during execution".to_string(),
                             ),
+                            updated_tool_output: None,
+                            updated_mcp_tool_output: None,
                         },
                     )),
                     ..Default::default()

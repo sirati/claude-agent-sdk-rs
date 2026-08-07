@@ -10,6 +10,8 @@
 //! 4. Rate limiting middleware
 //! 5. Request/response transformation middleware
 //! 6. Combining multiple middleware layers
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -96,7 +98,7 @@ impl Middleware for RetryMiddleware {
         "RetryMiddleware"
     }
 
-    async fn handle_error(&self, error: &anyhow::Error) -> Option<anyhow::Result<PromptResult>> {
+    async fn handle_error(&self, _error: &anyhow::Error) -> Option<anyhow::Result<PromptResult>> {
         let attempt = self.attempt_count.fetch_add(1, Ordering::SeqCst) as u32;
 
         if attempt < self.max_retries {
@@ -312,11 +314,11 @@ impl MetricsMiddleware {
             total_requests: requests,
             total_tokens: self.total_tokens.load(Ordering::SeqCst),
             total_cost_usd: self.total_cost.load(Ordering::SeqCst) as f64 / 100.0,
-            avg_latency_ms: if requests > 0 {
-                self.total_latency_ms.load(Ordering::SeqCst) / requests
-            } else {
-                0
-            },
+            avg_latency_ms: self
+                .total_latency_ms
+                .load(Ordering::SeqCst)
+                .checked_div(requests)
+                .unwrap_or_default(),
         }
     }
 }
@@ -494,7 +496,7 @@ async fn demo_caching_pattern() {
 async fn demo_rate_limiting() {
     println!("=== Rate Limiting Demo ===\n");
 
-    let rate_limit = RateLimitMiddleware::new(10);
+    let _rate_limit = RateLimitMiddleware::new(10);
 
     println!("Rate limit middleware configured:");
     println!("  Limit: 10 requests per minute");
@@ -530,7 +532,7 @@ async fn demo_metrics_collection() {
 async fn demo_transformation() {
     println!("=== Transformation Demo ===\n");
 
-    let transform = TransformationMiddleware::new(
+    let _transform = TransformationMiddleware::new(
         Some("Context: You are a helpful assistant.".to_string()),
         Some("Please be concise.".to_string()),
     );

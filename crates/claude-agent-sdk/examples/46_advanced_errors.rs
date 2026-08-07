@@ -258,12 +258,10 @@ async fn main() -> anyhow::Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let mut aggregator = ErrorAggregator::new();
-    let queries = vec![
-        "What is 1 + 1?",
+    let queries = ["What is 1 + 1?",
         "What is 2 + 2?",
         "What is 3 + 3?",
-        "What is 4 + 4?",
-    ];
+        "What is 4 + 4?"];
 
     for (i, prompt) in queries.iter().enumerate() {
         println!("Query {}: {}", i + 1, prompt);
@@ -278,7 +276,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Try recovery
                 let recovered = query_with_fallback(prompt).await.is_ok();
-                aggregator.report(*prompt, &error_msg, recovered);
+                aggregator.report(prompt, &error_msg, recovered);
 
                 if recovered {
                     println!("  ✅ Recovered with fallback");

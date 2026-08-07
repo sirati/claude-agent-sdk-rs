@@ -115,6 +115,7 @@ impl ZeroCopyMessageParser {
     /// # Errors
     ///
     /// Returns an error if the bytes are not valid UTF-8 or the JSON is malformed.
+    #[allow(dead_code)] // pre-existing, unreachable-from-outside utility fn (internal module is private)
     pub fn parse_bytes(bytes: &[u8]) -> Result<Message> {
         let json = std::str::from_utf8(bytes).map_err(|e| {
             ClaudeError::MessageParse(MessageParseError::new(
@@ -167,6 +168,7 @@ pub fn parse_with_mode(json: &str, mode: ParsingMode) -> Result<Message> {
 /// Parse a `serde_json::Value` into a Message.
 ///
 /// This is an alias for `MessageParser::parse` for convenience.
+#[allow(dead_code)] // pre-existing, unreachable-from-outside utility fn (internal module is private)
 pub fn parse_from_value(value: serde_json::Value) -> Result<Message> {
     MessageParser::parse(value)
 }
@@ -175,6 +177,7 @@ pub fn parse_from_value(value: serde_json::Value) -> Result<Message> {
 ///
 /// This provides zero-copy access to the message type without full deserialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // pre-existing, unreachable-from-outside utility type (see parse_from_value below)
 pub enum MessageKind {
     /// Assistant message
     Assistant,
@@ -211,6 +214,10 @@ impl MessageKind {
     /// let kind = MessageKind::detect(json);
     /// assert_eq!(kind, MessageKind::Assistant);
     /// ```
+    // Pre-existing utility API (predates this port), unreachable from outside
+    // the crate today since `internal` is private -- kept rather than deleted
+    // since it is well-documented, tested-by-doctest, reserved functionality.
+    #[allow(dead_code)]
     pub fn detect(json: &str) -> Self {
         // Fast path: look for "type" field with simple string matching
         // This avoids full JSON parsing for type detection

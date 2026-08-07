@@ -20,7 +20,7 @@ async fn parallel_queries(
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
     let start_time = Instant::now();
 
-    let results = stream::iter(prompts.into_iter())
+    let results = stream::iter(prompts)
         .map(|prompt| {
             let semaphore = semaphore.clone();
             async move {

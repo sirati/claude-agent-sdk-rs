@@ -64,11 +64,9 @@ async fn main() -> Result<()> {
 
 /// Example 1: Run queries sequentially (baseline)
 async fn run_sequential_queries() -> Result<()> {
-    let questions = vec![
-        "What is 2 + 2?",
+    let questions = ["What is 2 + 2?",
         "What is the capital of France?",
-        "Explain Rust ownership",
-    ];
+        "Explain Rust ownership"];
 
     for (i, question) in questions.iter().enumerate() {
         println!("   Query {}: {}", i + 1, question);

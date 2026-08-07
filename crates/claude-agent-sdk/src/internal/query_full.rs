@@ -154,6 +154,10 @@ impl QueryFull {
     /// retried (at-most-once delivery), so this is the consumer's only
     /// signal. Non-blocking — the channel is unbounded, so this never
     /// stalls the caller.
+    // Reports a transcript-mirror failure back into the message stream as a
+    // MirrorErrorMessage. No current call site for the same reason as
+    // wait_for_result_and_end_input below -- kept, not deleted.
+    #[allow(dead_code)]
     pub fn report_mirror_error(&self, key: Option<SessionKey>, error: String) {
         let _ = self.message_tx.send(build_mirror_error_message(key, error));
     }
@@ -434,6 +438,13 @@ impl QueryFull {
     /// upstream issue #1088). No timeout is applied: the signal is
     /// guaranteed to fire, either from a qualifying result or from the read
     /// loop's exit path if the process ends early.
+    // Faithful port of upstream Python's stdin-closing gate (issue #1088):
+    // wait for a run-ending result with no delegated tasks in flight before
+    // closing stdin. This crate's ClaudeClient never auto-closes stdin per
+    // turn the way Python's Query.stream_input does, so there is no current
+    // call site -- kept as tested, ready-to-use infrastructure for a future
+    // streaming-input path rather than deleted. See run_lifecycle.rs.
+    #[allow(dead_code)]
     pub async fn wait_for_result_and_end_input(&self) -> Result<()> {
         let needs_wait = {
             let has_mcp_servers = !self.sdk_mcp_servers.lock().await.is_empty();

@@ -9,6 +9,8 @@
 //! 3. Streaming with V2 API
 //! 4. Error handling patterns
 //! 5. Middleware and hooks integration
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -320,7 +322,7 @@ fn streaming_v2_example() -> Result<()> {
 
     println!("  Streaming: ");
     let start = Instant::now();
-    for (i, chunk) in chunks.iter().enumerate() {
+    for chunk in chunks.iter() {
         print!("{}", chunk);
         // Simulate network delay
         std::thread::sleep(Duration::from_millis(50));

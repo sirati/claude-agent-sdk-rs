@@ -11,6 +11,8 @@
 //! 5. Session management in CLI context
 //! 6. Configuration management
 //! 7. Error handling and recovery
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use std::collections::HashMap;

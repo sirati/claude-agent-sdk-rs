@@ -91,9 +91,9 @@ fn parse_frontmatter(content: &str) -> Result<(HashMap<String, String>, String),
                     current_field = Some(key);
                 }
             }
-        } else if trimmed.starts_with('-') {
+        } else if let Some(stripped) = trimmed.strip_prefix('-') {
             // 列表项
-            let item = trimmed[1..].trim().to_string();
+            let item = stripped.trim().to_string();
             current_value.push(item);
         } else if let Some(ref _field) = current_field {
             // 多行值

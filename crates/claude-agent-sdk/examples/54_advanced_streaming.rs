@@ -9,6 +9,8 @@
 //! 3. Stream composition and merging
 //! 4. Real-time processing pipelines
 //! 5. Stream timeout and cancellation
+#![allow(dead_code)] // example file: several functions/fields demonstrate patterns without being exercised by main()
+
 
 use anyhow::Result;
 use futures::stream::{Stream, StreamExt, TryStreamExt};

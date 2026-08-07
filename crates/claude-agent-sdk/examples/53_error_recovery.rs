@@ -9,6 +9,8 @@
 //! 3. Graceful degradation
 //! 4. Error context preservation
 //! 5. Recovery strategy selection
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -244,7 +246,7 @@ fn graceful_degradation_example() -> Result<()> {
     println!("=== Graceful Degradation ===\n");
 
     // Define fallback chain
-    let fallback_chain = vec![
+    let fallback_chain = [
         ("Primary Model", true),   // Try primary first
         ("Secondary Model", true), // Fall back to secondary
         ("Cache", true),           // Use cached response
@@ -424,14 +426,10 @@ where
     Fut: std::future::Future<Output = std::result::Result<T, E>>,
     E: std::fmt::Display,
 {
-    let mut last_error = None;
-
     for attempt in 1..=max_attempts {
         match operation().await {
             Ok(result) => return Ok(result),
-            Err(e) => {
-                last_error = Some(e);
-
+            Err(_e) => {
                 if attempt < max_attempts {
                     let delay = Duration::from_millis(base_delay_ms * 2u64.pow(attempt as u32 - 1));
                     tokio::time::sleep(delay).await;

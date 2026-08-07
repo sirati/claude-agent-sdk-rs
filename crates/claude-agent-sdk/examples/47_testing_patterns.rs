@@ -2,6 +2,8 @@
 //!
 //! This example demonstrates various testing patterns
 //! when working with the Claude Agent SDK.
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use claude_agent_sdk::{

@@ -2,6 +2,8 @@
 //!
 //! This example demonstrates advanced configuration options
 //! for fine-tuning Claude Agent behavior.
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use claude_agent_sdk::{
@@ -67,7 +69,7 @@ async fn beta_features_example() -> Result<()> {
 /// Example 2: Custom System Prompts
 async fn custom_system_prompts() -> Result<()> {
     // Simple system prompt
-    let simple_prompt = SystemPrompt::Text("You are a helpful Rust programming assistant.".to_string());
+    let _simple_prompt = SystemPrompt::Text("You are a helpful Rust programming assistant.".to_string());
 
     // Multi-part system prompt
     let multi_part_prompt = SystemPrompt::Text(
@@ -80,7 +82,7 @@ async fn custom_system_prompts() -> Result<()> {
     );
 
     // System prompt from preset
-    let preset_prompt = SystemPrompt::Preset(SystemPromptPreset {
+    let _preset_prompt = SystemPrompt::Preset(SystemPromptPreset {
         type_: "preset".to_string(),
         preset: "custom_prompt".to_string(),
         append: None,
@@ -102,12 +104,12 @@ async fn custom_system_prompts() -> Result<()> {
 /// Example 3: Advanced Tool Configuration
 async fn advanced_tool_config() -> Result<()> {
     // Tools preset
-    let all_tools = Tools::Preset(ToolsPreset::claude_code());
+    let _all_tools = Tools::Preset(ToolsPreset::claude_code());
     let coding_tools = Tools::Preset(ToolsPreset::new("coding"));
-    let filesystem_tools = Tools::Preset(ToolsPreset::new("filesystem"));
+    let _filesystem_tools = Tools::Preset(ToolsPreset::new("filesystem"));
 
     // Custom tool list
-    let custom_tools = Tools::List(vec!["Read".to_string(), "Write".to_string(), "Bash".to_string()]);
+    let _custom_tools = Tools::List(vec!["Read".to_string(), "Write".to_string(), "Bash".to_string()]);
 
     let options = ClaudeAgentOptions::builder()
         .tools(coding_tools)
@@ -184,7 +186,7 @@ async fn session_management_example() -> Result<()> {
         .build();
 
     // Resume existing session
-    let options_resume = ClaudeAgentOptions::builder()
+    let _options_resume = ClaudeAgentOptions::builder()
         .resume("my-session-id".to_string())
         .continue_conversation(true)
         .build();

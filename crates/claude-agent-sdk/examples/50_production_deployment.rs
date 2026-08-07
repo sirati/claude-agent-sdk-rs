@@ -144,7 +144,7 @@ impl Metrics {
             } else {
                 0.0
             },
-            avg_latency_ms: if total > 0 { total_latency / total } else { 0 },
+            avg_latency_ms: total_latency.checked_div(total).unwrap_or(0),
             total_tokens_used: total_tokens,
         }
     }
@@ -458,11 +458,9 @@ async fn example_deployment() -> anyhow::Result<()> {
     // Simulate some requests
     println!("📨 Processing sample requests...\n");
 
-    let requests = vec![
-        "What is 2 + 2? Answer with just the number.",
+    let requests = ["What is 2 + 2? Answer with just the number.",
         "What is the capital of France? One word.",
-        "Explain Rust in one sentence.",
-    ];
+        "Explain Rust in one sentence."];
 
     for (i, prompt) in requests.iter().enumerate() {
         println!("Request {}:", i + 1);

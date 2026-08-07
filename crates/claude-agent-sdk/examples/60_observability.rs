@@ -223,7 +223,7 @@ fn metrics_timer_example() -> anyhow::Result<()> {
     drop(timer2);
 
     // Manual timer control (if needed)
-    let timer3 = metrics.start_timer("batch_processing_ms", &[("batch", "import")]);
+    let _timer3 = metrics.start_timer("batch_processing_ms", &[("batch", "import")]);
     std::thread::sleep(Duration::from_millis(75));
     // Timer recorded here when dropped
 

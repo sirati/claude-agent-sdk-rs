@@ -62,11 +62,7 @@ async fn compare_memory_usage(prompt: &str) -> anyhow::Result<()> {
 
     let elapsed = start.elapsed();
     let mem_after = get_memory_usage();
-    let mem_used = if mem_after > mem_before {
-        mem_after - mem_before
-    } else {
-        0
-    };
+    let mem_used = mem_after.saturating_sub(mem_before);
 
     println!("query() Results:");
     println!("  Time: {:.2}s", elapsed.as_secs_f64());
@@ -81,11 +77,11 @@ async fn compare_memory_usage(prompt: &str) -> anyhow::Result<()> {
                     msg.message
                         .content
                         .iter()
-                        .filter_map(|b| {
+                        .map(|b| {
                             if let ContentBlock::Text(t) = b {
-                                Some(t.text.len())
+                                t.text.len()
                             } else {
-                                Some(0)
+                                0
                             }
                         })
                         .sum::<usize>(),
@@ -107,26 +103,19 @@ async fn compare_memory_usage(prompt: &str) -> anyhow::Result<()> {
     let mut stream_chars = 0;
 
     while let Some(result) = stream.next().await {
-        match result? {
-            Message::Assistant(msg) => {
-                for block in &msg.message.content {
-                    if let ContentBlock::Text(text) = block {
-                        stream_chars += text.text.len();
-                    }
+        if let Message::Assistant(msg) = result? {
+            for block in &msg.message.content {
+                if let ContentBlock::Text(text) = block {
+                    stream_chars += text.text.len();
                 }
-                stream_messages += 1;
-            },
-            _ => {},
+            }
+            stream_messages += 1;
         }
     }
 
     let elapsed_stream = start_stream.elapsed();
     let mem_after_stream = get_memory_usage();
-    let mem_used_stream = if mem_after_stream > mem_before_stream {
-        mem_after_stream - mem_before_stream
-    } else {
-        0
-    };
+    let mem_used_stream = mem_after_stream.saturating_sub(mem_before_stream);
 
     println!("query_stream() Results:");
     println!("  Time: {:.2}s", elapsed_stream.as_secs_f64());
@@ -158,11 +147,9 @@ async fn process_large_dataset() -> anyhow::Result<()> {
     println!("\n🔄 Large Dataset Processing with Streaming\n");
 
     // Generate a large prompt
-    let large_prompt = format!(
-        "Generate a comprehensive list of 50 programming best practices, \
+    let large_prompt = "Generate a comprehensive list of 50 programming best practices, \
          each with a brief explanation. Organize by category: \
-         Code Quality, Performance, Security, Testing, and Documentation."
-    );
+         Code Quality, Performance, Security, Testing, and Documentation.".to_string();
 
     let mem_before = get_memory_usage();
     let start = Instant::now();
@@ -174,39 +161,36 @@ async fn process_large_dataset() -> anyhow::Result<()> {
     println!("Processing stream...");
 
     while let Some(result) = stream.next().await {
-        match result? {
-            Message::Assistant(msg) => {
-                for block in &msg.message.content {
-                    if let ContentBlock::Text(text) = block {
-                        // Categorize items without storing all text
-                        let text_lower = text.text.to_lowercase();
-                        for category in [
-                            "code quality",
-                            "performance",
-                            "security",
-                            "testing",
-                            "documentation",
-                        ] {
-                            if text_lower.contains(category) {
-                                *categories.entry(category).or_insert(0) += 1;
-                                total_items += 1;
-                                break;
-                            }
-                        }
-
-                        // Print progress every few items
-                        if total_items % 10 == 0 {
-                            let elapsed = start.elapsed();
-                            println!(
-                                "  Processed {} items ({:.1} items/s)",
-                                total_items,
-                                total_items as f64 / elapsed.as_secs_f64()
-                            );
+        if let Message::Assistant(msg) = result? {
+            for block in &msg.message.content {
+                if let ContentBlock::Text(text) = block {
+                    // Categorize items without storing all text
+                    let text_lower = text.text.to_lowercase();
+                    for category in [
+                        "code quality",
+                        "performance",
+                        "security",
+                        "testing",
+                        "documentation",
+                    ] {
+                        if text_lower.contains(category) {
+                            *categories.entry(category).or_insert(0) += 1;
+                            total_items += 1;
+                            break;
                         }
                     }
+
+                    // Print progress every few items
+                    if total_items % 10 == 0 {
+                        let elapsed = start.elapsed();
+                        println!(
+                            "  Processed {} items ({:.1} items/s)",
+                            total_items,
+                            total_items as f64 / elapsed.as_secs_f64()
+                        );
+                    }
                 }
-            },
-            _ => {},
+            }
         }
     }
 
@@ -255,7 +239,7 @@ async fn optimize_buffer_size() -> anyhow::Result<()> {
                         // Process buffer when full
                         if buffer.len() >= buffer_size {
                             // Simulate processing
-                            let _: Vec<_> = buffer.drain(..).collect();
+                            let _: Vec<_> = std::mem::take(&mut buffer);
                         }
                     }
                 }
@@ -290,24 +274,21 @@ async fn efficient_text_processing() -> anyhow::Result<()> {
     println!("Processing languages mentioned:");
 
     while let Some(result) = stream.next().await {
-        match result? {
-            Message::Assistant(msg) => {
-                for block in &msg.message.content {
-                    if let ContentBlock::Text(text) = block {
-                        // Count words without storing
-                        word_count += text.text.split_whitespace().count();
+        if let Message::Assistant(msg) = result? {
+            for block in &msg.message.content {
+                if let ContentBlock::Text(text) = block {
+                    // Count words without storing
+                    word_count += text.text.split_whitespace().count();
 
-                        // Track language mentions
-                        let text_lower = text.text.to_lowercase();
-                        for lang in ["rust", "go", "python", "javascript"] {
-                            if text_lower.contains(lang) {
-                                *language_counts.entry(lang).or_insert(0) += 1;
-                            }
+                    // Track language mentions
+                    let text_lower = text.text.to_lowercase();
+                    for lang in ["rust", "go", "python", "javascript"] {
+                        if text_lower.contains(lang) {
+                            *language_counts.entry(lang).or_insert(0) += 1;
                         }
                     }
                 }
-            },
-            _ => {},
+            }
         }
     }
 

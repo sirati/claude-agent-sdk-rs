@@ -266,6 +266,7 @@ impl WorkerGuard {
     }
 
     /// Get the stdout reader for streaming
+    #[allow(dead_code)] // pre-existing, reserved accessor, not currently invoked
     pub fn stdout(&self) -> Option<Arc<Mutex<BufReader<ChildStdout>>>> {
         self.worker.as_ref().map(|w| Arc::clone(&w.stdout))
     }
@@ -406,6 +407,7 @@ impl ConnectionPool {
     }
 
     /// Get pool statistics
+    #[allow(dead_code)] // pre-existing, reserved pool-stats API, not currently invoked
     pub async fn stats(&self) -> PoolStats {
         let state = self.state.lock().await;
         PoolStats {
@@ -462,6 +464,9 @@ pub async fn get_global_pool() -> Option<Arc<ConnectionPool>> {
 }
 
 /// Shutdown the global connection pool
+// Pre-existing connection-pool management API (predates this port); reserved
+// for future use by a global-pool-enabled call path, not currently invoked.
+#[allow(dead_code)]
 pub async fn shutdown_global_pool() {
     let global = get_pool_singleton();
     let mut guard = global.lock().await;

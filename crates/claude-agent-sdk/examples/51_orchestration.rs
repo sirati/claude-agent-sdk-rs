@@ -16,6 +16,8 @@
 //! ```bash
 //! cargo run --example 51_orchestration
 //! ```
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use claude_agent_sdk::orchestration::{
     Agent, AgentOutput, Orchestrator, OrchestratorInput, ParallelOrchestrator,

@@ -19,6 +19,7 @@ use super::Transport;
 pub struct PooledTransport {
     pool: Arc<ConnectionPool>,
     guard: Option<WorkerGuard>,
+    #[allow(dead_code)] // pre-existing, kept for a future re-pool/reconnect path
     options: crate::types::config::ClaudeAgentOptions,
     ready: bool,
 }
@@ -29,6 +30,7 @@ impl PooledTransport {
     /// # Arguments
     /// * `pool_config` - Configuration for the connection pool
     /// * `options` - SDK options for spawning workers
+    #[allow(dead_code)] // pre-existing alternate constructor (from_pool is the one currently used), kept for API completeness
     pub fn new(
         pool_config: PoolConfig,
         options: crate::types::config::ClaudeAgentOptions,
@@ -53,6 +55,7 @@ impl PooledTransport {
     }
 
     /// Take the stdout reader for streaming (for bidirectional mode)
+    #[allow(dead_code)] // pre-existing, reserved accessor, not currently invoked
     pub fn take_stdout(&mut self) -> Option<Arc<Mutex<tokio::io::BufReader<tokio::process::ChildStdout>>>> {
         self.guard.as_ref().and_then(|g| g.stdout())
     }
@@ -193,11 +196,13 @@ impl Transport for PooledTransport {
 ///
 /// This should be called before creating any clients that use pooling.
 /// If not called, the first client will initialize the pool lazily.
+#[allow(dead_code)] // pre-existing, reserved pool-management API, not currently invoked
 pub async fn init_pool(config: PoolConfig, options: crate::types::config::ClaudeAgentOptions) -> Result<()> {
     init_global_pool(config, options).await
 }
 
 /// Get the global connection pool if initialized
+#[allow(dead_code)] // pre-existing, reserved pool-management API, not currently invoked
 pub async fn get_pool() -> Option<Arc<ConnectionPool>> {
     get_global_pool().await
 }

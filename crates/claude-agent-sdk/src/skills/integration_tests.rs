@@ -63,7 +63,7 @@ mod skill_md_tests {
         // Verify multi-file structure
         assert!(skill.reference.is_some()); // reference.md exists
         assert!(skill.forms.is_some());     // forms.md exists (now added)
-        assert!(skill.scripts.len() > 0);  // scripts/ directory
+        assert!(!skill.scripts.is_empty());  // scripts/ directory
 
         println!("✅ pdf-processor skill parsed successfully");
         println!("   - Name: {}", skill.metadata.name);
@@ -441,7 +441,7 @@ mod tool_restriction_tests {
 }
 
 #[cfg(test)]
-mod integration_tests {
+mod integration_suite {
     use super::*;
 
     #[tokio::test]

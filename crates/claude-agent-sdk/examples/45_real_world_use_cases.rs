@@ -2,6 +2,8 @@
 //!
 //! This example demonstrates practical applications of the Claude Agent SDK
 //! in common real-world scenarios.
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use claude_agent_sdk::{
@@ -387,13 +389,11 @@ fn calc(a: i32, b: i32) -> i32 {
 }
 "#;
 
-    let transformation_steps = vec![
-        "Rename function to be more descriptive",
+    let transformation_steps = ["Rename function to be more descriptive",
         "Add type parameters for generic numeric types",
         "Add documentation",
         "Add error handling for overflow",
-        "Add unit tests",
-    ];
+        "Add unit tests"];
 
     let mut current_code = initial_code.to_string();
 

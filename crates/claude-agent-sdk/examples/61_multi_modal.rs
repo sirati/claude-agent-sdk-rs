@@ -9,6 +9,8 @@
 //! 3. Image preprocessing and optimization
 //! 4. URL vs base64 encoding comparison
 //! 5. Handling large images and batch processing
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use std::time::Instant;
@@ -97,8 +99,7 @@ fn multiple_images_example() -> Result<()> {
     println!("=== Multiple Images in Single Query ===\n");
 
     // Simulate multiple images
-    let images = vec![
-        ImageData {
+    let images = [ImageData {
             name: "screenshot1.png".to_string(),
             format: ImageFormat::Png,
             size_bytes: 150_000,
@@ -118,8 +119,7 @@ fn multiple_images_example() -> Result<()> {
             size_bytes: 45_000,
             dimensions: (800, 600),
             data: vec![0; 45_000],
-        },
-    ];
+        }];
 
     println!("Processing {} images:", images.len());
 
@@ -168,7 +168,7 @@ fn multiple_images_example() -> Result<()> {
 fn mixed_content_example() -> Result<()> {
     println!("=== Mixed Content Types ===\n");
 
-    let content_blocks = vec![
+    let content_blocks = [
         // Opening text
         ContentBlock::Text {
             content: "I need help understanding this architecture:".to_string(),

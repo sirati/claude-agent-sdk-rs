@@ -210,7 +210,7 @@ fn delegation_strategies_example() -> anyhow::Result<()> {
     ];
 
     for (strategy, description) in strategies {
-        let executor = SubagentExecutor::new(strategy.clone());
+        let executor = SubagentExecutor::new(strategy);
         println!("Strategy: {:?}", executor.strategy());
         println!("  {}", description);
         println!();

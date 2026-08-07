@@ -2,6 +2,8 @@
 //!
 //! This example demonstrates how to benchmark and measure
 //! the performance of the Claude Agent SDK.
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use claude_agent_sdk::{Message, query, query_stream};
@@ -41,13 +43,11 @@ async fn main() -> Result<()> {
 
 /// Example 1: Benchmark query latency
 async fn benchmark_query_latency() -> Result<()> {
-    let queries = vec![
-        "What is 2 + 2?",
+    let queries = ["What is 2 + 2?",
         "What is the capital of France?",
         "Explain Rust ownership",
         "What is a closure?",
-        "Explain async/await",
-    ];
+        "Explain async/await"];
 
     let mut latencies = Vec::new();
 
@@ -137,7 +137,7 @@ async fn benchmark_query_vs_stream() -> Result<()> {
     let start = Instant::now();
     for _ in 0..iterations {
         let mut stream = query_stream(query_text, None).await?;
-        while let Some(_) = futures::StreamExt::next(&mut stream).await {}
+        while futures::StreamExt::next(&mut stream).await.is_some() {}
     }
     let stream_time = start.elapsed();
 
@@ -189,15 +189,13 @@ async fn benchmark_scaling() -> Result<()> {
         ),
         (
             "Long",
-            format!(
-                "Provide a comprehensive explanation of:\n\
+            "Provide a comprehensive explanation of:\n\
              1. Rust ownership system\n\
              2. Borrowing and references\n\
              3. Lifetimes and their impact\n\
              4. Smart pointers (Box, Rc, Arc)\n\
              5. Thread safety and Send/Sync traits\n\
-             Include examples for each concept."
-            ),
+             Include examples for each concept.".to_string(),
         ),
     ];
 

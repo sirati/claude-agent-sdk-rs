@@ -2,6 +2,8 @@
 //!
 //! This example demonstrates end-to-end integration testing
 //! for the Claude Agent SDK.
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use claude_agent_sdk::{
@@ -10,7 +12,6 @@ use claude_agent_sdk::{
 };
 use futures::stream::StreamExt;
 use serde_json::json;
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -229,8 +230,8 @@ async fn test_permission_system() -> Result<()> {
 
 /// Test 7: Hooks system
 async fn test_hooks() -> Result<()> {
-    use claude_agent_sdk::{HookContext, HookInput, HookJsonOutput, HookMatcher, Hooks};
-    use std::sync::Arc;
+    use claude_agent_sdk::{HookContext, HookInput, HookJsonOutput, Hooks};
+    
 
     async fn test_hook(
         _input: HookInput,

@@ -94,6 +94,7 @@ impl AtomicBufferMetrics {
     }
 
     /// Reset all metrics to zero
+    #[allow(dead_code)] // pre-existing, reserved buffer-metrics API, not currently invoked
     pub fn reset(&self) {
         self.peak_size.store(0, Ordering::Relaxed);
         self.message_count.store(0, Ordering::Relaxed);
@@ -118,11 +119,7 @@ pub struct BufferMetricsSnapshot {
 impl BufferMetricsSnapshot {
     /// Get average message size
     pub fn average_message_size(&self) -> usize {
-        if self.message_count == 0 {
-            0
-        } else {
-            self.total_bytes / self.message_count
-        }
+        self.total_bytes.checked_div(self.message_count).unwrap_or(0)
     }
 }
 
@@ -305,6 +302,7 @@ impl SubprocessTransport {
     /// println!("Peak buffer size: {} bytes", metrics.peak_size);
     /// println!("Average message size: {} bytes", metrics.average_message_size());
     /// ```
+    #[allow(dead_code)] // pre-existing, reserved buffer-metrics API, not currently invoked
     pub fn get_buffer_metrics(&self) -> BufferMetricsSnapshot {
         self.buffer_metrics.snapshot()
     }
@@ -312,6 +310,7 @@ impl SubprocessTransport {
     /// Reset buffer metrics.
     ///
     /// Useful when starting a new session to get fresh metrics.
+    #[allow(dead_code)] // pre-existing, reserved buffer-metrics API, not currently invoked
     pub fn reset_buffer_metrics(&self) {
         self.buffer_metrics.reset();
     }

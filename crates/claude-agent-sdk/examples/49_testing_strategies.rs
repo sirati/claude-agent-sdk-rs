@@ -6,6 +6,8 @@
 //! - Mock tools for testing
 //! - Property-based testing concepts
 //! - Deterministic testing with seeds
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use claude_agent_sdk::{
     ContentBlock, Message, PermissionMode, ClaudeAgentOptions, Hooks, query,

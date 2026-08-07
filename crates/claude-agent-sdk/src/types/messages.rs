@@ -27,6 +27,14 @@ pub enum AssistantMessageError {
 }
 
 /// Main message enum containing all message types from CLI
+// `ResultMessage` (432 bytes) makes this enum's largest variant much bigger
+// than the others. The mechanical fix clippy suggests -- `Result(Box<ResultMessage>)`
+// -- changes this crate's public API: every downstream `Message::Result(r) => ...`
+// match site (in this crate's own client/example code and any external
+// consumer's) would need to change to match on a `Box`. That is a breaking
+// API change, not hygiene, so it is out of scope for a warning-cleanup pass;
+// left as a deliberate, documented exception instead.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {

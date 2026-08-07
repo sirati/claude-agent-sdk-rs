@@ -11,6 +11,8 @@
 //! 5. Subagent delegation patterns
 //! 6. Streaming response handling
 //! 7. Cost tracking
+#![allow(dead_code)] // example file: several functions demonstrate patterns without being called from main()
+
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -344,11 +346,14 @@ impl MultiModalBuilder {
 // Feature 6: Streaming Response Handler
 // ============================================================================
 
+type TextCallback = Arc<dyn Fn(&str) + Send + Sync>;
+type ErrorCallback = Arc<dyn Fn(&anyhow::Error) + Send + Sync>;
+
 /// Handler for streaming responses with callbacks
 struct StreamingHandler {
-    on_text: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    on_text: Option<TextCallback>,
     on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
-    on_error: Option<Arc<dyn Fn(&anyhow::Error) + Send + Sync>>,
+    on_error: Option<ErrorCallback>,
     text_buffer: String,
 }
 
@@ -501,7 +506,7 @@ async fn demo_session_manager() {
 
     // Create sessions
     let session1 = manager.create_session("claude-sonnet-4").await;
-    let session2 = manager.create_session("claude-opus-4").await;
+    let _session2 = manager.create_session("claude-opus-4").await;
 
     println!("\nCreated sessions:");
     for session in manager.list_sessions().await {

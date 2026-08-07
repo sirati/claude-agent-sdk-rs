@@ -35,7 +35,7 @@ impl Skill for TestSkill {
 }
 
 #[cfg(test)]
-mod tests {
+mod skill_tests {
     use super::*;
 
     #[test]

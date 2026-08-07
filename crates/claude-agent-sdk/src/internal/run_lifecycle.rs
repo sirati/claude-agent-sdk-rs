@@ -79,11 +79,10 @@ pub(crate) fn track_task_lifecycle(
         "task_notification" => {
             inflight.remove(task_id);
         }
-        "task_updated" => {
-            if patch_status.is_some_and(|s| TERMINAL_TASK_STATUSES.contains(&s)) {
+        "task_updated"
+            if patch_status.is_some_and(|s| TERMINAL_TASK_STATUSES.contains(&s)) => {
                 inflight.remove(task_id);
             }
-        }
         _ => {}
     }
 }
@@ -99,6 +98,7 @@ pub(crate) fn track_task_lifecycle(
 /// received, so there is no missed-wakeup window to reason about.
 pub(crate) struct RunEndedSignal {
     tx: tokio::sync::Mutex<Option<oneshot::Sender<()>>>,
+    #[allow(dead_code)] // only read via wait() above, currently unreachable for the same reason
     rx: tokio::sync::Mutex<Option<oneshot::Receiver<()>>>,
 }
 
@@ -121,6 +121,9 @@ impl RunEndedSignal {
     /// before this call started), and also returns immediately on every
     /// call after the first (the receiver is consumed on first wait, same
     /// as upstream's `Event.wait()` being safe to call repeatedly once set).
+    // Only reachable via wait_for_result_and_end_input (query_full.rs), which
+    // has no current call site for the same reason -- see its allow there.
+    #[allow(dead_code)]
     pub(crate) async fn wait(&self) {
         let rx = self.rx.lock().await.take();
         if let Some(rx) = rx {

@@ -9,10 +9,11 @@
 //! 3. Progress tracking with callbacks
 //! 4. Error aggregation and partial success handling
 //! 5. Batch result aggregation and statistics
+#![allow(dead_code)] // example file: several functions/fields demonstrate patterns without being exercised by main()
+
 
 use anyhow::Result;
-use claude_agent_sdk::{query, Message, ClaudeAgentOptions, ClaudeClient, PermissionMode};
-use futures::stream::{StreamExt, TryStreamExt};
+use futures::stream::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -220,8 +221,7 @@ fn error_aggregation_example() -> Result<()> {
     println!("=== Error Aggregation ===\n");
 
     // Simulate batch results with some failures
-    let results = vec![
-        BatchResult {
+    let results = [BatchResult {
             item_id: 1,
             success: true,
             response: Some("Success 1".to_string()),
@@ -255,8 +255,7 @@ fn error_aggregation_example() -> Result<()> {
             response: Some("Success 5".to_string()),
             error: None,
             duration_ms: 200,
-        },
-    ];
+        }];
 
     // Aggregate results
     let successful: Vec<_> = results.iter().filter(|r| r.success).collect();
@@ -312,7 +311,7 @@ fn error_aggregation_example() -> Result<()> {
 
 /// Creates sample batch items for demonstration
 fn create_sample_items(count: usize) -> Vec<BatchItem> {
-    let categories = vec!["general", "code", "math", "creative", "analysis"];
+    let categories = ["general", "code", "math", "creative", "analysis"];
 
     (1..=count)
         .map(|id| BatchItem {

@@ -11,6 +11,9 @@ fn entry(uuid: &str) -> SessionStoreEntry {
     SessionStoreEntry::new("user", json!({"uuid": uuid}).as_object().cloned().unwrap())
 }
 
+/// Errors reported via `on_error` during a test: `(session key, message)`.
+type ReportedErrors = AsyncMutex<Vec<(Option<SessionKey>, String)>>;
+
 struct RecordingStore {
     appends: AsyncMutex<Vec<(SessionKey, Vec<SessionStoreEntry>)>>,
     fail_times: AtomicUsize,
@@ -129,7 +132,7 @@ async fn retries_then_succeeds() {
 #[tokio::test]
 async fn exhausted_retries_report_on_error() {
     let store = Arc::new(RecordingStore::new(10)); // always fails
-    let reported: Arc<AsyncMutex<Vec<(Option<SessionKey>, String)>>> = Arc::new(AsyncMutex::new(Vec::new()));
+    let reported: Arc<ReportedErrors> = Arc::new(AsyncMutex::new(Vec::new()));
     let reported_clone = reported.clone();
     let on_error: MirrorErrorCallback = Arc::new(move |key, err| {
         let reported = reported_clone.clone();

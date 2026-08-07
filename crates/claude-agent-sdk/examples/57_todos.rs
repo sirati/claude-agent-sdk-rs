@@ -59,8 +59,8 @@ fn status_management_example() -> anyhow::Result<()> {
     // Add some tasks
     let id1 = todo_list.add("Task A: Setup environment").id.clone();
     let id2 = todo_list.add("Task B: Write code").id.clone();
-    let id3 = todo_list.add("Task C: Code review").id.clone();
-    let id4 = todo_list.add("Task D: Deploy").id.clone();
+    let _id3 = todo_list.add("Task C: Code review").id.clone();
+    let _id4 = todo_list.add("Task D: Deploy").id.clone();
 
     println!("Initial state:");
     print_todo_status(&todo_list);
@@ -98,7 +98,7 @@ fn filtering_and_statistics_example() -> anyhow::Result<()> {
 
     // Add 10 tasks
     for i in 1..=10 {
-        todo_list.add(&format!("Task {}", i));
+        todo_list.add(format!("Task {}", i));
     }
 
     // Complete some tasks using direct status update to avoid borrow issues

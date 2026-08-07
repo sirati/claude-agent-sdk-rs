@@ -10,6 +10,7 @@ use claude_agent_sdk::v2::{
     PermissionMode as V2PermissionMode, PromptResult, Session, SessionOptions,
 };
 
+#[allow(clippy::assertions_on_constants)] // the assert documents "this compiled and ran" as the test outcome
 #[test]
 fn test_v1_v2_imports_coexist() {
     // Test that both V1 and V2 types can be imported simultaneously
@@ -22,6 +23,8 @@ fn test_v1_v2_imports_coexist() {
         .build();
 
     // If this compiles, both APIs coexist without naming conflicts
+    // The assertion IS the test: reaching this line means the preceding code
+    // compiled and ran without a naming/type conflict between V1 and V2 APIs.
     assert!(true);
 }
 
@@ -100,6 +103,7 @@ fn test_v1_v2_options_equivalence() {
     assert_eq!(v1_options.max_turns, v2_options.max_turns);
 }
 
+#[allow(clippy::assertions_on_constants)] // the assert documents "this compiled and ran" as the test outcome
 #[test]
 fn test_v1_v2_no_naming_conflicts() {
     // Verify that there are no naming conflicts between V1 and V2 types
@@ -116,6 +120,8 @@ fn test_v1_v2_no_naming_conflicts() {
     let _v2_result_type: std::marker::PhantomData<PromptResult> = std::marker::PhantomData;
 
     // If this compiles, all types can coexist
+    // The assertion IS the test: reaching this line means the preceding code
+    // compiled and ran without a naming/type conflict between V1 and V2 APIs.
     assert!(true);
 }
 
@@ -245,6 +251,7 @@ fn test_v1_v2_types_are_distinct() {
 }
 
 #[tokio::test]
+#[allow(clippy::assertions_on_constants)] // the assert documents "this compiled and ran" as the test outcome
 async fn test_v1_v2_async_functions_coexist() {
     // Test that V1 and V2 async functions can coexist
 
@@ -267,5 +274,7 @@ async fn test_v1_v2_async_functions_coexist() {
     let _v2_result = use_v2_api().await;
 
     // If this compiles and runs, async functions coexist
+    // The assertion IS the test: reaching this line means the preceding code
+    // compiled and ran without a naming/type conflict between V1 and V2 APIs.
     assert!(true);
 }

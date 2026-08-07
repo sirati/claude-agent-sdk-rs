@@ -752,10 +752,6 @@ pub struct BufferMetrics {
 impl BufferMetrics {
     /// Get average message size
     pub fn average_message_size(&self) -> usize {
-        if self.message_count == 0 {
-            0
-        } else {
-            self.total_bytes / self.message_count
-        }
+        self.total_bytes.checked_div(self.message_count).unwrap_or(0)
     }
 }

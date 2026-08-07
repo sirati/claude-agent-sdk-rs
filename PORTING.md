@@ -125,4 +125,54 @@ nix develop --command bash -c '<cargo command>'
 
 ## Status log
 
-(Updated as slices land — see commit history on this branch.)
+- **Slice 1 (message parser + types): DONE.** Fixed the confirmed fatal crash
+  (`Message` now has a `#[serde(other)]` catch-all `Unknown` variant instead of
+  failing to deserialize; callers filter it out). Added `RateLimitEvent`/`RateLimitInfo`,
+  `ServerToolUseBlock`/`ServerToolResultBlock`, `TaskStartedMessage`/`TaskProgressMessage`/
+  `TaskNotificationMessage`/`TaskUpdatedMessage`, `MirrorErrorMessage`, `HookEventMessage`,
+  `DeferredToolUse`, `ModelUsage`, `TaskUsage`. Verified live against the real `claude` CLI
+  (see `examples/99_smoke_rate_limit_event.rs`) — a real `rate_limit_event` line no longer
+  crashes `query()`. Known follow-up (not done): `types/messages.rs` is ~1495 lines,
+  over the project's file-size guidance; splitting it out was judged out of scope for a
+  parallel agent to do safely mid-port. Also: `Message` now has a clippy
+  `large size difference between variants` warning from `ResultMessage` growing — noted,
+  not fixed (boxing it would ripple through many `Message::Result(..)` match sites
+  across the crate; tracked as a follow-up, not a functional regression).
+- **Slice 2 (ClaudeAgentOptions + CLI argv): DONE.** `types/config.rs` was split into
+  `types/config/` (multiple files) during this work. New fields/flags added: `tools`,
+  `SystemPromptFile`, `strict_mcp_config`, `session_id`, `fallback_model`, add-dirs,
+  `plugins`, sandbox settings, `thinking` union type, `effort: "xhigh"`, `output_format`,
+  `task_budget`, `PermissionMode::DontAsk`/`Auto`, and the corresponding CLI flags in
+  `internal/transport/subprocess.rs`.
+- **Slice 3 (hooks + permissions): DONE.** Added `HookEvent::PostToolUseFailure`/
+  `Notification`/`SubagentStart`/`PermissionRequest` (fork only had 6 of 10 events),
+  their hook-input/output structs, the `_SubagentContextMixin` fields (`agent_id`,
+  `agent_type`) on the relevant hook inputs, `ToolPermissionContext` new fields, and
+  `can_use_tool_shadowed_warning()` (ported as a pure function + `tracing::warn!` call
+  site wired into `ClaudeClient::connect()` by the orchestrator afterward). Known minor
+  gap: Python's shadow-warning also treats `skills == "all"` as implicitly appending a
+  bare `"Skill"` to `allowed_tools` for shadowing purposes; the Rust port checks
+  `allowed_tools` as configured but does not special-case `skills == "all"` — low-impact,
+  not ported.
+- **Slice 4 (MCP status + control protocol): DONE.** Added `reconnect_mcp_server`,
+  `toggle_mcp_server`, `stop_task`, `get_mcp_status` (typed), `get_context_usage` to
+  `ClaudeClient` (previously **none** of these existed, not even untyped). Added
+  `McpToolAnnotations`, `McpServerInfo`, `McpServerStatus`, `McpStatusResponse`,
+  `McpToolInfo`, `McpServerConnectionStatus`, `McpServerStatusConfig`,
+  `McpSdkServerConfigStatus`, `McpClaudeAIProxyServerConfig`, `ContextUsageCategory`,
+  `ContextUsageResponse` to `types/mcp.rs`.
+- **Orchestrator follow-up fixes:** fixed a pre-existing (unrelated to this port)
+  broken doctest in `v2/types.rs` (`PromptResult` example missing `buffer_metrics`);
+  added the two new `PermissionMode` variants (`DontAsk`, `Auto`) to the separate
+  `v2::types::PermissionMode` enum for parity with `types::config::PermissionMode`;
+  wired the shadow-warning check into `ClaudeClient::connect()`.
+- **Result:** `cargo build --workspace` clean. `cargo test --workspace`: 451 lib +
+  15 integration + 143 doctests, all passing. `cargo clippy --workspace --all-targets`:
+  0 errors, only pre-existing-style warnings plus the one new (non-blocking, documented
+  above) `large_enum_variant`-style warning on `Message`.
+- **Slice 5 (session store subsystem): NOT ATTEMPTED this pass.** See "Tier 2" above —
+  deliberate scope decision, not a silent omission. ~4000 lines of new Python
+  (`sessions.py`, `session_mutations.py`, `session_resume.py`, etc.) implementing
+  filesystem-layout session persistence, JSONL transcript mutation, and (for resume)
+  credential-file copying that mirrors CLI-internal on-disk conventions rather than
+  general SDK-consumer-facing behavior. Recommended as a separate follow-up effort.
